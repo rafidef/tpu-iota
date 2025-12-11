@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 from common.models.api_models import (
     GetActivationRequest,
     RunInfo,
@@ -14,9 +14,15 @@ from common.models.api_models import (
     SubmittedWeightsAndOptimizerPresigned,
     SyncActivationAssignmentsRequest,
     WeightUpdate,
+    AttestationChallengeRequest,
+    RequestAttestationChallengeResponse,
+    SubmitMergedPartitionsRequest,
+    MinerAttestationPayload,
 )
 from common.models.error_models import LayerStateError, EntityNotRegisteredError, RunFullError, SpecVersionError
+
 from common.utils.exceptions import (
+    APIException,
     LayerStateException,
     MinerNotRegisteredException,
     RunFullException,
@@ -202,18 +208,46 @@ class MinerAPIClient(CommonAPIClient):
             logger.error(f"Error getting learning rate: {e}")
             raise
 
-    async def submit_merged_partitions(self, merged_partitions: list[MinerPartition]) -> dict:
+    async def submit_merged_partitions(
+        self,
+        merged_partitions: list[MinerPartition],
+        attestation: MinerAttestationPayload | None = None,
+    ) -> dict:
         """Submit merged partitions to the orchestrator."""
         try:
+            body = SubmitMergedPartitionsRequest(
+                partitions=merged_partitions,
+                attestation=attestation,
+            ).model_dump()
             response: dict = await CommonAPIClient.orchestrator_request(
                 method="POST",
                 path="/miner/submit_merged_partitions",
                 hotkey=self.hotkey,
-                body=[partition.model_dump() for partition in merged_partitions],
+                body=body,
             )
             return self.parse_response(response)
         except Exception as e:
             logger.error(f"Error submitting merged partitions: {e}")
+            raise
+
+    async def request_attestation_challenge(
+        self, action: Literal["weights", "merged_partitions"]
+    ) -> RequestAttestationChallengeResponse | None:
+        """Request a fresh attestation challenge for a specific action."""
+        try:
+            response = await CommonAPIClient.orchestrator_request(
+                method="POST",
+                path="/miner/request_attestation_challenge",
+                hotkey=self.hotkey,
+                body=AttestationChallengeRequest(action=action).model_dump(),
+            )
+            parsed = self.parse_response(response)
+            return RequestAttestationChallengeResponse.model_validate(parsed)
+        except APIException as e:
+            logger.warning(f"Attestation challenge unavailable for action {action}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error requesting attestation challenge for action {action}: {e}")
             raise
 
     async def initiate_file_upload_request(
@@ -251,6 +285,14 @@ class MinerAPIClient(CommonAPIClient):
         file_upload_completion_request: FileUploadCompletionRequest,
     ) -> CompleteFileUploadResponse | dict:
         try:
+            parts = file_upload_completion_request.parts or []
+            logger.info(
+                f"Sending complete_file_upload_request | "
+                f"object_name={file_upload_completion_request.object_name} "
+                f"upload_id={file_upload_completion_request.upload_id} "
+                f"parts_count={len(parts)} "
+                f"part_numbers={[p.get('PartNumber') for p in parts][:5]}"
+            )
             response = await CommonAPIClient.orchestrator_request(
                 method="POST",
                 path="/miner/complete_multipart_upload",

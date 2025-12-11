@@ -1,9 +1,5 @@
-from prometheus_client import Counter, Gauge, REGISTRY
-
-# Keep global references so repeated imports/instantiations don't register the
-# same metric name multiple times (pytest loads several services in one process).
-_counter_cache: dict[str, Counter] = {}
-_gauge_cache: dict[str, Gauge] = {}
+from typing import Optional
+from prometheus_client import Counter, Gauge, REGISTRY, CollectorRegistry
 
 label_names = ["project", "subsystem"]
 
@@ -41,23 +37,27 @@ COMMON_HIST_DURATION_BUKCET = (
 )
 
 
-def GaugeWithParams(metric_name: str, description: str) -> Gauge:
-    if metric_name not in _gauge_cache:
-        _gauge_cache[metric_name] = Gauge(
-            metric_name,
-            description,
-            labelnames=label_names,
-            registry=REGISTRY,
-        )
-    return _gauge_cache[metric_name]
+def GaugeWithParams(metric_name: str, description: str, registry: Optional[CollectorRegistry] = None) -> Gauge:
+    if registry is None:
+        registry = REGISTRY
+
+    g = Gauge(
+        metric_name,
+        description,
+        labelnames=label_names,
+        registry=registry,
+    )
+    return g
 
 
-def CounterWithParams(metric_name: str, description: str) -> Counter:
-    if metric_name not in _counter_cache:
-        _counter_cache[metric_name] = Counter(
-            metric_name,
-            description,
-            labelnames=label_names,
-            registry=REGISTRY,
-        )
-    return _counter_cache[metric_name]
+def CounterWithParams(metric_name: str, description: str, registry: Optional[CollectorRegistry] = None) -> Counter:
+    if registry is None:
+        registry = REGISTRY
+
+    c = Counter(
+        metric_name,
+        description,
+        labelnames=label_names,
+        registry=registry,
+    )
+    return c

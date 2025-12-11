@@ -4,9 +4,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from loguru import logger
+
 try:
     from ._attest_expected import EXPECTED_SELF_SHA256 as _EXPECTED_SELF_SHA256
 except Exception:  # pragma: no cover - generated file may be missing in dev
+    logger.exception("Failed to load expected self digests")
     _EXPECTED_SELF_SHA256: dict[str, str] = {}
 
 
@@ -15,12 +18,14 @@ def _resolve_expected_entry() -> Optional[tuple[Path, str]]:
     try:
         import common.attest  # type: ignore[attr-defined]
     except Exception:  # pragma: no cover - native module absent
+        logger.exception("Failed to import expected self digests")
         return None
 
     module_path = Path(common.attest.__file__).resolve()  # type: ignore[attr-defined]
     expected = _EXPECTED_SELF_SHA256.get(module_path.name)
     if expected:
         return module_path, expected
+    logger.warning("Failed to resolve expected self digests")
     return None
 
 

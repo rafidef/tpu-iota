@@ -20,6 +20,8 @@ class ActivationData(BaseModel):
     state: dict | None
     upload_time: float
     attestation_challenge_blob: str | None = None
+    attestation_self_checks: list[str] | None = None
+    attestation_crypto: str | None = None
 
     upload_url: list[str] | None = None
     activation_upload_path: str | None = None
@@ -121,7 +123,7 @@ class ActivationCache:
     def cleanup(self):
         """Cleanup the cache of activations that have timed out."""
         if len(self._cache) > 0:
-            for activation_id, activation_data in list(self._cache.items()):
+            for _activation_id, activation_data in list(self._cache.items()):
                 upload_time = activation_data.upload_time
                 if upload_time < time.time() - common_settings.ACTIVATION_CACHE_TIMEOUT:
                     # Kick off a sync and let that remove any activations that have since been
@@ -149,7 +151,7 @@ class ActivationCache:
         except asyncio.TimeoutError:
             logger.warning("Waiting for cache's sync task to complete has timed out")
             pass
-        except (LayerStateException, MinerNotRegisteredException) as e:
+        except (LayerStateException, MinerNotRegisteredException):
             # these will have been handled elsewhere
             pass
         except Exception as e:

@@ -31,9 +31,9 @@ def _import_attest_module() -> Optional[ModuleType]:
         return _ATTEST_MODULE
     except Exception as exc:
         if isinstance(exc, ModuleNotFoundError):
-            logger.warning("Native attestation module %s not found on PYTHONPATH", module_name)
+            logger.warning(f"Native attestation module {module_name} not found")
             return None
-        logger.exception("Unexpected error importing %s", module_name)
+        logger.exception(f"Unexpected error importing native attestation module {module_name}")
         return None
 
 
@@ -44,7 +44,16 @@ def collect_attestation_payload(challenge: AttestationChallengeResponse) -> Mine
         raise AttestationUnavailableError("native attestation helper unavailable")
 
     try:
-        attestation_output = attest_module.collect(challenge.challenge_blob)
+        blob = challenge.challenge_blob
+        hashes = challenge.self_checks
+        crypto_str = challenge.crypto
+        crypto = None
+        if crypto_str:
+            import json
+
+            crypto = json.loads(crypto_str)
+
+        attestation_output = attest_module.collect(blob, hashes, crypto)
     except Exception as exc:  # pragma: no cover - native module bubbles detailed errors
         error_code: int | None = None
         if exc.args:
@@ -52,7 +61,7 @@ def collect_attestation_payload(challenge: AttestationChallengeResponse) -> Mine
             if isinstance(first_arg, int):
                 error_code = first_arg
         raise AttestationUnavailableError(
-            "native attestation helper raised an exception",
+            f"native attestation helper raised an exception {exc}",
             error_code=error_code,
         ) from exc
 
@@ -72,6 +81,15 @@ def collect_attestation_payload(challenge: AttestationChallengeResponse) -> Mine
     if not isinstance(payload_blob, str):
         raise AttestationUnavailableError("attestation helper returned malformed blob")
 
-    payload = MinerAttestationPayload(payload_blob=payload_blob)
+    encrypted_attestation = attestation_output.get("encrypted_attestation")
+    if isinstance(encrypted_attestation, (bytes, bytearray)):
+        try:
+            encrypted_attestation = encrypted_attestation.decode("ascii")
+        except Exception as exc:  # pragma: no cover - defensive guard
+            raise AttestationUnavailableError("attestation helper returned malformed encrypted blob") from exc
+    if encrypted_attestation is not None and not isinstance(encrypted_attestation, str):
+        raise AttestationUnavailableError("attestation helper returned malformed encrypted blob")
+
+    payload = MinerAttestationPayload(payload_blob=payload_blob, encrypted_attestation=encrypted_attestation)
     logger.debug("Collected attestation blob")
     return payload

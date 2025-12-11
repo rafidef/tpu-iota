@@ -75,25 +75,20 @@ class Validator(BaseNeuron, HealthServerMixin):
                 loop_count += 1
                 try:
                     logger.debug(f"Weight loop iteration {loop_count} starting")
-                    await weight_setting_step(subtensor=self.subtensor, wallet=self.wallet)
+                    await weight_setting_step(wallet=self.wallet, subtensor=self.subtensor)
 
-                    # Reload the metagraph to get the latest weights, must use lite=False to get the latest weights
                 except TimeoutError as e:
                     logger.error(f"TimeoutError in weight loop iteration {loop_count}: {e}")
 
                 except Exception as e:
                     logger.exception(f"Error in weight loop iteration {loop_count}: {e}")
+                    await set_weights(wallet=self.wallet, subtensor=self.subtensor, weights=copy_weights_from_chain())
 
-                logger.debug(f"Weight loop iteration {loop_count} setting weights")
-                await set_weights(
-                    wallet=self.wallet,
-                    subtensor=self.subtensor,
-                    weights=copy_weights_from_chain(),
-                )
                 logger.info(
                     f"💤 Weight submission loop sleeping for {validator_settings.WEIGHT_SUBMIT_INTERVAL} seconds 💤"
                 )
                 await asyncio.sleep(validator_settings.WEIGHT_SUBMIT_INTERVAL)
+
             except Exception as e:
                 logger.exception(f"Error in weight loop: {e}")
 

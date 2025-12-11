@@ -397,8 +397,6 @@ def dequantize_nd_tensor_uint8_uniform(x: torch.Tensor, dtype: torch.dtype = tor
 
 if __name__ == "__main__":
     # Test the quantization and dequantization functions
-    import time
-
     def run_test(batch_size=1, seq_len=122000, hidden_size=2048, device="cuda", num_runs=100):
         print(f"\nRunning test with shape: ({batch_size}, {seq_len}, {hidden_size})")
         print(f"Number of runs: {num_runs}")

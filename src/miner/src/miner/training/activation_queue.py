@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from typing import Optional
 from loguru import logger
 from miner.utils.timer_logger import TimerLoggerMiner
 import torch
@@ -272,6 +273,8 @@ class ActivationQueue:
                     state=None,
                     upload_time=time.time(),
                     attestation_challenge_blob=activation_response.attestation_challenge_blob,
+                    attestation_self_checks=activation_response.attestation_self_checks,
+                    attestation_crypto=activation_response.attestation_crypto,
                     upload_url=activation_response.presigned_upload_url,
                     activation_upload_path=activation_response.activation_upload_path,
                 )
@@ -457,7 +460,10 @@ class ActivationQueue:
                 )
             return forward_response
 
-    def _cancel_tasks(self, tasks: list[asyncio.Task], completed_tasks: set[asyncio.Task] = set()):
+    def _cancel_tasks(self, tasks: list[asyncio.Task], completed_tasks: Optional[set[asyncio.Task]] = None):
+        if completed_tasks is None:
+            completed_tasks = set()
+
         # Cancel all tasks
         for t in tasks:
             if t not in completed_tasks and not t.done():

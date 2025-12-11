@@ -171,6 +171,8 @@ class TrainingPhase:
                     activation_id=activation_data.activation_id,
                     direction="forward",
                     attestation_challenge_blob=activation_data.attestation_challenge_blob,
+                    attestation_self_checks=activation_data.attestation_self_checks,
+                    attestation_crypto=activation_data.attestation_crypto,
                     upload_url=activation_data.upload_url,
                     activation_path=activation_data.activation_upload_path,
                 )
@@ -325,6 +327,8 @@ class TrainingPhase:
                         activation_id=activation_data.activation_id,
                         direction="backward",
                         attestation_challenge_blob=activation_data.attestation_challenge_blob,
+                        attestation_self_checks=activation_data.attestation_self_checks,
+                        attestation_crypto=activation_data.attestation_crypto,
                         upload_url=activation_data.upload_url,
                         activation_path=activation_data.activation_upload_path,
                     )

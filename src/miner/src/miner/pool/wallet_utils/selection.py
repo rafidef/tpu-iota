@@ -14,18 +14,20 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from miner import settings as miner_settings
 
+from substrateinterface import Keypair
+from miner import settings as miner_settings
+from common import settings as common_settings
 from .btcli import parse_btcli_wallets
 from .ui import clear_screen_with_banner, print_centered, prompt_ask_centered
 
 WalletSelection = Tuple[str, str]
 
-_DEFAULT_COLDKEY_NAME = "iota"
-_DEFAULT_HOTKEY_NAME = "iota_miner"
+_DEFAULT_COLDKEY_NAME = "iota_miner_pool_coldkey"
+_DEFAULT_HOTKEY_NAME = "iota_miner_pool_hotkey"
 _MNEMONIC_PATTERN = re.compile(r"[a-z]+(?: [a-z]+){6,}")
 _PAYOUT_PREFERENCE_FILE = Path.home() / ".bittensor" / "wallets" / ".pool_miner_payout.json"
-CREATORS_PAYOUT_COLDKEY_PLACEHOLDER = "CREATORS_PAYOUT_COLDKEY_PLACEHOLDER"  # TODO replace this by the actual coldkey
+CREATORS_PAYOUT_COLDKEY_PLACEHOLDER = common_settings.CREATORS_PAYOUT_COLDKEY_PLACEHOLDER
 
 
 def _get_console(console: Console | None = None) -> Console:
@@ -194,7 +196,7 @@ def create_new_wallet(
             capture_output=True,
             text=True,
             check=True,
-            timeout=60,
+            timeout=600,
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
@@ -388,6 +390,34 @@ def _prompt_for_payout_coldkey(
         return CREATORS_PAYOUT_COLDKEY_PLACEHOLDER
 
 
+def is_valid_ss58(address: str, ss58_format: int = None) -> bool:
+    """
+    Check if a string is a valid SS58 address.
+
+    Args:
+        address: The SS58 address string to validate
+        ss58_format: Optional SS58 format number (e.g., 42 for generic Substrate)
+                    If None, validates against any SS58 format
+
+    Returns:
+        True if valid, False otherwise
+    """
+    try:
+        # This will raise an exception if the address is invalid
+        Keypair(ss58_address=address)
+        return True
+    except Exception:
+        return False
+
+
+# Usage examples
+print(is_valid_ss58("5DWq6LBGKa7GxbpEJkAjuW3q94iDYAp9L117uLncFwyXNg8e"))  # Valid
+print(is_valid_ss58("invalid_address"))  # False
+
+# Check against specific SS58 format (e.g., Polkadot = 0, Kusama = 2, Generic = 42)
+print(is_valid_ss58(r"5DWq6LBGKa7GxbpEJkAjuW3q94iDYAp9L117uLncFwyXNg8e", ss58_format=42))
+
+
 def _load_saved_payout_coldkey() -> tuple[bool, str | None]:
     """Retrieve the stored payout coldkey selection."""
     try:
@@ -403,10 +433,11 @@ def _load_saved_payout_coldkey() -> tuple[bool, str | None]:
         return False, None
 
     if "payout_coldkey" in data:
-        saved_value = data.get("payout_coldkey")
-        if isinstance(saved_value, str):
+        saved_value = str(data.get("payout_coldkey"))
+        if isinstance(saved_value, str) and is_valid_ss58(saved_value):
             return True, saved_value
-        return True, str(saved_value)
+        print(f"Attempted to load invalid payout coldkey: {saved_value}")
+        return False, None
     return False, None
 
 

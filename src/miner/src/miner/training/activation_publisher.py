@@ -37,6 +37,8 @@ class ActivationPublisher:
         activation_id: str,
         direction: str,
         attestation_challenge_blob: str | None,
+        attestation_self_checks: list[str] | None,
+        attestation_crypto: str | None,
         upload_url: list[str] | None,
         activation_path: str | None,
     ):
@@ -47,6 +49,8 @@ class ActivationPublisher:
                 activation_id=activation_id,
                 direction=direction,
                 attestation_challenge_blob=attestation_challenge_blob,
+                attestation_self_checks=attestation_self_checks,
+                attestation_crypto=attestation_crypto,
                 upload_url=upload_url,
                 activation_path=activation_path,
             )
@@ -64,6 +68,8 @@ class ActivationPublisher:
         activation_id: str,
         direction: str,
         attestation_challenge_blob: str | None,
+        attestation_self_checks: list[str] | None,
+        attestation_crypto: str | None,
         upload_url: list[str] | None,
         activation_path: str | None,
     ):
@@ -92,7 +98,11 @@ class ActivationPublisher:
                 attestation_payload: MinerAttestationPayload | None = None
                 if RUN_FLAGS.attest.isOn():
                     try:
-                        challenge = AttestationChallengeResponse(challenge_blob=attestation_challenge_blob)
+                        challenge = AttestationChallengeResponse(
+                            challenge_blob=attestation_challenge_blob,
+                            self_checks=attestation_self_checks,
+                            crypto=attestation_crypto,
+                        )
                         attestation_payload = await asyncio.to_thread(
                             collect_attestation_payload,
                             challenge,
@@ -104,7 +114,7 @@ class ActivationPublisher:
                         error_code = getattr(exc, "error_code", None)
                         code_suffix = f" (error_code={error_code})" if error_code is not None else ""
                         logger.error(
-                            f"Attestation unavailable while submitting activation {activation_id}{code_suffix}: {exc}"
+                            f"Attestation unavailable while submitting activation {activation_id} {code_suffix}: {exc}"
                         )
                     except Exception as exc:
                         logger.exception(

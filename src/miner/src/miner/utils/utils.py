@@ -47,7 +47,7 @@ async def get_start_and_end_indices(tensor_length: int, num_sections: int, targe
     return start_idx, end_idx
 
 
-async def create_metadata(tensor: torch.Tensor, num_sections: int) -> dict:
+def create_metadata(tensor: torch.Tensor, num_sections: int) -> dict:
     """Create metadata for a tensor.
 
     Args:
@@ -158,6 +158,14 @@ async def upload_file(
                 ),
             )
 
+            if isinstance(file_upload_response, FileUploadResponse):
+                logger.info(
+                    f"Initiated multipart upload | file_type={file_type} "
+                    f"object_name={file_upload_response.object_name} "
+                    f"upload_id={file_upload_response.upload_id} "
+                    f"urls={len(file_upload_response.urls)} num_parts={num_parts}"
+                )
+
             # Need to return to check the parsing of the response
             if isinstance(file_upload_response, dict):
                 return file_upload_response
@@ -173,6 +181,12 @@ async def upload_file(
 
         # Complete file upload. Necessary to notify orchestrator that all parts have been uploaded.
         if isinstance(file_upload_response, FileUploadResponse) and file_upload_response.upload_id is not None:
+            logger.info(
+                f"Completing multipart upload | file_type={file_type} "
+                f"object_name={file_upload_response.object_name} "
+                f"upload_id={file_upload_response.upload_id} parts_count={len(parts)} "
+                f"part_numbers={[p.get('PartNumber') for p in parts][:5]}"
+            )
             complete_file_upload_response: CompleteFileUploadResponse | dict = (
                 await miner_api_client.complete_file_upload_request(
                     hotkey=hotkey,
@@ -269,6 +283,12 @@ async def upload_tensor(
                 assert len(payload) > 0, "Tensor is empty"
                 upload_urls = initiate_response.urls
                 upload_id = initiate_response.upload_id
+                if isinstance(initiate_response, FileUploadResponse):
+                    logger.info(
+                        f"Initiated upload | file_type={file_type} object_name={initiate_response.object_name} "
+                        f"upload_id={initiate_response.upload_id} urls={len(initiate_response.urls)} "
+                        f"num_parts={num_parts}"
+                    )
             if not initiate_response:
                 raise Exception("Error initiating file upload")
 
@@ -286,6 +306,11 @@ async def upload_tensor(
             async with TimerLoggerMiner(
                 name="complete_file_upload_request", metadata={"file_type": file_type}, hotkey=hotkey.ss58_address[:8]
             ):
+                logger.info(
+                    f"Completing multipart upload | file_type={file_type} "
+                    f"object_name={initiate_response.object_name} upload_id={initiate_response.upload_id} "
+                    f"parts_count={len(parts) if parts else 0} part_numbers={[p.get('PartNumber') for p in parts][:5]}"
+                )
                 await miner_api_client.complete_file_upload_request(
                     hotkey=hotkey,
                     file_upload_completion_request=FileUploadCompletionRequest(

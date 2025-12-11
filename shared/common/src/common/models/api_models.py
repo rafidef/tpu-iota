@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -5,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 from common import settings
 from common.models.ml_models import ModelConfig, ModelMetadata
 from common.models.run_flags import RunFlags
+from common.utils.partitions import MinerPartition
 
 
 class WeightsUploadResponse(BaseModel):
@@ -54,6 +57,12 @@ class SyncActivationAssignmentsRequest(BaseModel):
 class WeightUpdate(BaseModel):
     weights_path: str
     weights_metadata_path: str
+    attestation: "MinerAttestationPayload | None" = None
+
+
+class SubmitMergedPartitionsRequest(BaseModel):
+    partitions: list[MinerPartition]
+    attestation: "MinerAttestationPayload | None" = None
 
 
 class MinerRegistrationResponse(BaseModel):
@@ -88,6 +97,8 @@ class ActivationResponse(BaseModel):
     presigned_download_url: str | None = None
     reason: str | None = None
     attestation_challenge_blob: str | None = None
+    attestation_self_checks: list[str] | None = None
+    attestation_crypto: str | None = None
     presigned_upload_url: list[str] | None = None
     activation_upload_path: str | None = None
     target_download_url: str | None = None
@@ -143,7 +154,7 @@ class ValidatorSetBurnRateModel(BaseModel):
 class MinerScore(BaseModel):
     """Miner's incentive details"""
 
-    uid: int
+    uid: int | None = None
     hotkey: str
 
     coldkey: str | None = None
@@ -205,10 +216,25 @@ class MinerAttestationRuntime(BaseModel):
 class MinerAttestationPayload(BaseModel):
     payload_blob: str
     runtime: MinerAttestationRuntime | None = Field(default=None, exclude=True, repr=False)
+    encrypted_attestation: str | None = Field(default=None, repr=False)
+
+
+class AttestationChallengeRequest(BaseModel):
+    action: Literal["weights", "merged_partitions"]
 
 
 class AttestationChallengeResponse(BaseModel):
     challenge_blob: str
+    self_checks: list[str] | None = None
+    crypto: str | None = None
+
+
+class RequestAttestationChallengeResponse(BaseModel):
+    action: Literal["weights", "merged_partitions"]
+    attestation_challenge_blob: str
+    self_checks: list[str]
+    crypto: str
+    expires_at: float
 
 
 class SubmitActivationRequest(BaseModel):
