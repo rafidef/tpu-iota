@@ -8,12 +8,10 @@ from loguru import logger
 from bittensor import Wallet, Subtensor
 
 
-async def weight_setting_step(subtensor: Subtensor, wallet: Wallet):
-    metagraph = bt.metagraph(netuid=int(common_settings.NETUID), lite=False, network=common_settings.NETWORK)
-
+async def weight_setting_step(wallet: Wallet, subtensor: Subtensor):
     if not (global_weights := await ValidatorAPIClient.get_global_miner_scores(hotkey=wallet.hotkey)):
         logger.warning("No global weights received, temporarily copying weights from the chain")
-        await set_weights(subtensor=subtensor, metagraph=metagraph, weights=copy_weights_from_chain())
+        await set_weights(wallet=wallet, subtensor=subtensor, weights=copy_weights_from_chain())
         return
 
     if "error_name" in global_weights:
@@ -22,17 +20,15 @@ async def weight_setting_step(subtensor: Subtensor, wallet: Wallet):
         return
 
     global_weights = SubnetScores.model_validate(global_weights)
-
     logger.debug(f"GRADIENT VALIDATOR: GLOBAL MINER SCORES: {global_weights}")
 
     # Safer type conversion
     try:
         global_weights = {int(m.uid): m.weight for m in global_weights.miner_scores}
-    except (ValueError, TypeError) as e:
-        logger.error(f"Invalid UID in global_weights: {e}")
-        global_weights = {}
+    except Exception:
+        logger.error("Error converting global weights to dictionary")
+        raise
 
-    logger.debug(f"Received global weights: {global_weights}")
     await set_weights(wallet=wallet, subtensor=subtensor, weights=global_weights)
 
 

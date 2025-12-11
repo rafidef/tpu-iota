@@ -32,9 +32,12 @@ from miner.utils.utils import (
     wait_for_state,
 )
 from miner.utils.run_utils import identify_best_run
+from miner.utils.attestation_utils import collect_attestation_payload, AttestationUnavailableError
 from common import settings as common_settings
 from common.models.api_models import (
+    AttestationChallengeResponse,
     MinerRegistrationResponse,
+    MinerAttestationPayload,
     RegisterMinerRequest,
     SubmittedWeightsAndOptimizerPresigned,
     WeightUpdate,
@@ -83,7 +86,35 @@ class Miner(BaseNeuron, HealthServerMixin):
             state_manager=self.state_manager,
             model_manager=self.model_manager,
         )
+        self._latest_attestation_payloads: dict[str, MinerAttestationPayload] = {}
         self.visualization_process: multiprocessing.Process | None = None
+
+    async def _collect_attestation_payload(self, action: str) -> MinerAttestationPayload | None:
+        if RUN_FLAGS.attest.isOff():
+            return None
+
+        challenge_response = await self.miner_api_client.request_attestation_challenge(action=action)
+        if challenge_response is None:
+            logger.debug(f"No attestation challenge issued for action {action}")
+            return None
+
+        try:
+            challenge = AttestationChallengeResponse(
+                challenge_blob=challenge_response.attestation_challenge_blob,
+                self_checks=challenge_response.self_checks,
+                crypto=challenge_response.crypto,
+            )
+            payload = await asyncio.to_thread(collect_attestation_payload, challenge)
+            self._latest_attestation_payloads[action] = payload
+            logger.info(f"Collected attestation payload for action {action}")
+            return payload
+        except AttestationUnavailableError as exc:
+            error_code = getattr(exc, "error_code", None)
+            suffix = f" (error_code={error_code})" if error_code is not None else ""
+            logger.error(f"Attestation unavailable for action {action}{suffix}: {exc}")
+        except Exception as exc:
+            logger.exception(f"Error collecting attestation for action {action}: {exc}")
+        return None
 
     def _start_visualization_server_process(self, port: int = 8009):
         """Start the visualization server in a separate process."""
@@ -422,13 +453,17 @@ class Miner(BaseNeuron, HealthServerMixin):
                 except Exception as e:
                     logger.warning(f"Error notifying orchestrator of state call: {e}")
 
+                attestation_payload: MinerAttestationPayload | None = await self._collect_attestation_payload(
+                    action="weights"
+                )
+
                 check_for_nans_and_infs(
                     tensor=pseudo_gradients,
                     name=f"pseudo gradients for miner {self.hotkey[:8]}",
                     exception_type=NanInfException,
                 )
 
-                metadata: dict = await create_metadata(tensor=pseudo_gradients, num_sections=self.num_partitions)
+                metadata: dict = create_metadata(tensor=pseudo_gradients, num_sections=self.num_partitions)
 
                 # Convert tensor to bytes, handling bfloat16 compatibility
                 path = await upload_tensor(
@@ -447,7 +482,11 @@ class Miner(BaseNeuron, HealthServerMixin):
                 )
 
                 response: dict = await self.miner_api_client.submit_weights(
-                    weight_update=WeightUpdate(weights_path=path.object_path, weights_metadata_path=metadata_path),
+                    weight_update=WeightUpdate(
+                        weights_path=path.object_path,
+                        weights_metadata_path=metadata_path,
+                        attestation=attestation_payload,
+                    ),
                 )
 
                 if not response:
@@ -476,6 +515,14 @@ class Miner(BaseNeuron, HealthServerMixin):
         try:
             # Start the healthcheck server
             if miner_settings.LAUNCH_HEALTH:
+                try:
+                    killed_process = self._kill_process_on_port(miner_settings.MINER_HEALTH_PORT)
+                    if killed_process:
+                        logger.warning(
+                            f"Terminated existing process using healthcheck port {miner_settings.MINER_HEALTH_PORT}"
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to clear healthcheck port {miner_settings.MINER_HEALTH_PORT}: {e}")
                 await self._start_health_server()
                 logger.info("🏥 Health server started")
             else:
@@ -613,9 +660,7 @@ class Miner(BaseNeuron, HealthServerMixin):
                 logger.debug(f"Merging batch {batch} of {min(miner_settings.N_PARTITION_BATCHES, len(partitions))}")
 
                 # Grab a batch of partitions to merge (no downloading yet)
-                batch_partitions: list[MergingPartition] = await get_partition_batch(
-                    batch_index=batch, partitions=partitions
-                )
+                batch_partitions: list[MergingPartition] = get_partition_batch(batch_index=batch, partitions=partitions)
                 logger.debug(f"{len(batch_partitions)} batch partitions grabbed")
 
                 # Download the weights for the batch (fills partitions.weights with a list of all pseudograds from all the other miners)
@@ -687,7 +732,11 @@ class Miner(BaseNeuron, HealthServerMixin):
                 logger.debug(f"{len(final_partitions)} batch partitions uploaded")
 
                 # Submit the merged partitions to the database
-                await self.miner_api_client.submit_merged_partitions(merged_partitions=final_partitions)
+                attestation_payload = await self._collect_attestation_payload(action="merged_partitions")
+                await self.miner_api_client.submit_merged_partitions(
+                    merged_partitions=final_partitions,
+                    attestation=attestation_payload,
+                )
                 logger.debug(f"{len(final_partitions)} batch partitions submitted")
 
                 self.model_manager.model = self.model_manager.model.to(miner_settings.DEVICE)

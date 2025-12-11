@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Subnet shared dependencies"
 authors = [{ name = "Macrocosmos.ai" }]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "common",
     "bittensor==9.9.0",

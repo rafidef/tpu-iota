@@ -2,7 +2,6 @@ import json
 import time
 from hashlib import sha256
 from math import ceil
-import traceback
 from typing import Any, Optional
 from fastapi import HTTPException, Header
 from loguru import logger
@@ -74,8 +73,9 @@ class EpistulaHeaders(BaseModel):
         except ValueError as e:
             logger.error("signature_verification_failed", error=e)
             raise HTTPException(status_code=400, detail=EpistulaError(error=str(e)).model_dump())
+
         except Exception as e:
-            logger.error("signature_verification_failed", error=traceback.format_exc())
+            logger.exception(f"signature_verification_failed: {self.model_dump_json()}")
             return str(e)
 
 

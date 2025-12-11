@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Common shared dependencies"
 authors = [{ name = "Macrocosmos.ai" }]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "aiohttp>=3.9.0",
     "dotenv>=0.9.9",

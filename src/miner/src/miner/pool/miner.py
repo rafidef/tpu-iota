@@ -193,7 +193,6 @@ class Miner(BaseMiner):
                 self.model_manager.epoch_on_registration = current_epoch
 
                 update_run_flags(response.run_flags)
-
                 _ = await self.miner_api_client.change_payout_coldkey_request(self._selected_payout_coldkey)
 
                 logger.success(

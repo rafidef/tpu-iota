@@ -463,7 +463,7 @@ async def merge_partition_batch(
     return valid_partitions
 
 
-async def get_partition_batch(batch_index: int, partitions: list[MinerPartition]) -> list[MergingPartition]:
+def get_partition_batch(batch_index: int, partitions: list[MinerPartition]) -> list[MergingPartition]:
     """
     Returns a batch of partitions as a list, i.e.
     [

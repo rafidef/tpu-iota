@@ -28,23 +28,3 @@ VALIDATOR_HEALTH_ENDPOINT = os.getenv("VALIDATOR_HEALTH_ENDPOINT", "/health")
 
 WALLET_NAME = os.getenv("wallet_name", "test")
 WALLET_HOTKEY = os.getenv("wallet_hotkey", "m1")
-
-## Detector settings ##
-
-# List of active detector functions (by function name)
-ACTIVE_DETECTORS: list[str] = [
-    "quantile_detector",
-    "rank_z_score_detector",
-]
-
-# Default parameters for each detector function
-DETECTOR_DEFAULT_PARAMS: dict[str, dict] = {
-    "quantile_detector": {
-        "lower_quantile": 0.05,
-        "upper_quantile": 0.95,
-        "symmetric": True,
-    },
-    "rank_z_score_detector": {
-        "z_threshold": 3.0,
-    },
-}
