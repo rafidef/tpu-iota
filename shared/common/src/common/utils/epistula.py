@@ -5,7 +5,7 @@ from math import ceil
 from typing import Any, Optional
 from fastapi import HTTPException, Header
 from loguru import logger
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 from substrateinterface import Keypair
 import uuid
 from common import settings as common_settings
@@ -26,6 +26,7 @@ class EpistulaError(BaseModel):
 
 
 class EpistulaHeaders(BaseModel):
+    model_config = ConfigDict(validate_by_name=True, validate_by_alias=True)
     timestamp: str = Header(default=str(time.time()), alias="Epistula-Timestamp")
     signed_by: str = Header(..., alias="Epistula-Signed-By")
     request_signature: str = Header(..., alias="Epistula-Request-Signature")

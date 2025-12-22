@@ -745,3 +745,6 @@ class Miner(BaseNeuron, HealthServerMixin):
                 del merged_partitions  # TODO: @cassova: do a better job of cleaning this up
                 del final_partitions  # TODO: @cassova: do a better job of cleaning this up
                 log_gpu_memory_usage(note="after merging partitions")
+
+
+# main copy
