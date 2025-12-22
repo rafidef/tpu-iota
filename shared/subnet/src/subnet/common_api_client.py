@@ -35,7 +35,7 @@ class CommonAPIClient:
         if hotkey:
             headers = generate_header(hotkey, body_bytes)
             # Don't add request ID to headers - let orchestrator generate it
-
+        logger.warning(f"ALL HEADERS: {headers}")
         for i in range(common_settings.REQUEST_RETRY_COUNT):
             try:
                 if i:

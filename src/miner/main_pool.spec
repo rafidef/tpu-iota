@@ -1,10 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 
+load_dotenv()
+
+MONOREPO_ROOT = Path(os.getcwd()).parents[1]
+ATTEST_SO_PATH = MONOREPO_ROOT / "shared/common/src/common/attest.cpython-310-darwin.so"
+ENTITLEMENTS_PATH = MONOREPO_ROOT / "scripts" / "entitlements.plist"
+ENTITLEMENTS_PATH = Path(os.getcwd()).parents[1] / "scripts" / "entitlements.plist"
+
+SIGNING_IDENTITY = os.getenv("MACOS_SIGNING_IDENTITY")
 
 a = Analysis(
     ["main_pool.py"],
     pathex=[],
-    binaries=[],
+    binaries=[(str(ATTEST_SO_PATH), "common")],
     datas=[],
     hiddenimports=["platformdirs.macos"],
     hookspath=[],
@@ -33,6 +44,6 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
+    codesign_identity=SIGNING_IDENTITY,
+    entitlements_file=str(ENTITLEMENTS_PATH) if ENTITLEMENTS_PATH.exists() else None,
 )
