@@ -1,3 +1,4 @@
+import os
 import torch
 from typing import Optional
 
@@ -5,13 +6,18 @@ from typing import Optional
 def get_available_device() -> str:
     """
     Get the best available device in order of preference:
-    CUDA/ROCm > Intel XPU > XLA > DirectML > MPS > Vulkan > PrivateUse1 > CPU
+    XLA (if env set) > CUDA/ROCm > Intel XPU > XLA > DirectML > MPS > Vulkan > PrivateUse1 > CPU
 
     Note: AMD ROCm GPUs typically use the torch.cuda interface when ROCm is installed.
 
     Returns:
         str: The device string ('cuda', 'xpu', 'xla', 'dml', 'mps', 'vulkan', 'privateuseone', or 'cpu')
     """
+    # If DEVICE env var is explicitly set to xla, prioritize TPU
+    env_device = os.getenv("DEVICE", "").lower()
+    if env_device == "xla" and _is_xla_available():
+        return "xla"
+
     if torch.cuda.is_available():
         return "cuda"  # This includes both NVIDIA CUDA and AMD ROCm
     elif hasattr(torch, "mps") and torch.mps.is_available():
