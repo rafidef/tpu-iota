@@ -91,7 +91,7 @@ class ActivationCache:
         """Check if the cache is full."""
         if len(self._cache) >= miner_settings.MAX_ACTIVATION_CACHE_SIZE:
             logger.info(
-                f"Miner {self._hotkey[:8]} cache full with {len(self._cache)} activations: {self._cache.keys()}"
+                f"Training node {self._hotkey[:8]} cache full with {len(self._cache)} activations: {self._cache.keys()}"
             )
 
             # Clean up inactive activations if not already syncing

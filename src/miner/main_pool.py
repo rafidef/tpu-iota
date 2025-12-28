@@ -3,7 +3,7 @@ import multiprocessing
 # this is neccessary to avoid accidental multiprocessing fork-bomb when compiled
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    APP_NAME = "iota-miner"
+    APP_NAME = "iota-training"
 
 import argparse
 import asyncio
@@ -16,7 +16,7 @@ _ORIGINAL_LOGURU_REMOVE = logger.remove
 
 
 def _install_loguru_null_sink() -> None:
-    """Permanently silence loguru output for the pool miner process."""
+    """Permanently silence loguru output for the pool training process."""
     _ORIGINAL_LOGURU_REMOVE()
     _ORIGINAL_LOGURU_ADD(lambda message: None)
 
@@ -36,8 +36,8 @@ from miner.pool.miner import Miner
 
 
 def main():
-    """Main entry point for the miner pool miner."""
-    parser = argparse.ArgumentParser(description="Run the miner pool miner.")
+    """Main entry point for the AI training pool."""
+    parser = argparse.ArgumentParser(description="Run the AI training pool.")
     parser.add_argument(
         "--auto-start",
         dest="auto_start",
@@ -53,12 +53,12 @@ def main():
     parser.add_argument(
         "--wallet",
         dest="wallet",
-        help="Coldkey name to use. If omitted, defaults to the built-in pool miner wallet.",
+        help="Coldkey name to use. If omitted, defaults to the built-in pool wallet.",
     )
     parser.add_argument(
         "--hotkey",
         dest="hotkey",
-        help="Hotkey name to use. If omitted, defaults to the built-in pool miner hotkey.",
+        help="Hotkey name to use. If omitted, defaults to the built-in pool hotkey.",
     )
     parser.add_argument(
         "--payout-coldkey",

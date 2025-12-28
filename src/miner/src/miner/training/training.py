@@ -314,7 +314,7 @@ class TrainingPhase:
                     all_input_activations_grads.append(input_activation_grads)
 
                 async with TimerLoggerMiner(name="publishing_backwards", hotkey=self._hotkey[:8]):
-                    logger.debug(f"Backwards since reset for miner {self._hotkey[:8]}: {self.backwards_since_reset}")
+                    logger.debug(f"Backwards since reset for training node {self._hotkey[:8]}: {self.backwards_since_reset}")
 
                     logger.debug(f"All input activations grads shape: {len(all_input_activations_grads)}")
                     self.backwards_since_reset += 1
@@ -411,7 +411,7 @@ class TrainingPhase:
             )
 
             check_for_nans_and_infs(
-                tensor=loss, name=f"Loss for miner {self._hotkey[:8]}", exception_type=NanInfException
+                tensor=loss, name=f"Loss for training node {self._hotkey[:8]}", exception_type=NanInfException
             )
 
             # Update cache with loss before attempting to report it to handle API errors gracefully

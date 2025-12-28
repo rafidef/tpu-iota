@@ -1,4 +1,4 @@
-"""Miner pool miner that extends the default miner with interactive wallet selection."""
+"""Pool training node that extends the default training with interactive wallet selection."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class Miner(BaseMiner):
         device_type = "gpu" if detected_device == "cuda" else detected_device
         if miner_settings.DEVICE != detected_device:
             logger.info(
-                "Auto-detected %s device; updating miner DEVICE from '%s' to '%s'.",
+                "Auto-detected %s device; updating DEVICE from '%s' to '%s'.",
                 device_type,
                 miner_settings.DEVICE,
                 detected_device,
@@ -63,7 +63,7 @@ class Miner(BaseMiner):
         self._btcli_disabled = btcli_disabled
         if self._btcli_disabled:
             logger.warning(
-                "btcli integrations disabled. Loading pool miner wallet using local files only; "
+                "btcli integrations disabled. Loading pool wallet using local files only; "
                 "interactive wallet creation and selection are unavailable."
             )
 
@@ -135,12 +135,12 @@ class Miner(BaseMiner):
             f"Coldkey: [bold cyan]{wallet_name}[/]\n"
             f"Hotkey: [bold cyan]{wallet_hotkey}[/]\n"
             f"Payout coldkey: [{payout_style}]{payout_text}[/]\n"
-            "[green]Wallet configuration complete. Initialising miner...[/]"
+            "[green]Wallet configuration complete. Initialising AI training...[/]"
         )
         self.console.print(
             Panel.fit(
                 message,
-                title="[bold green]Miner Ready[/]",
+                title="[bold green]AI Training Ready[/]",
                 border_style="green",
             )
         )
@@ -152,16 +152,16 @@ class Miner(BaseMiner):
         """
         while True:
             try:
-                logger.info(f"🔄 Attempting to fetch run info for miner {self.hotkey[:8]}...")
+                logger.info(f"🔄 Attempting to fetch run info for training node {self.hotkey[:8]}...")
                 run_info_list = await self.miner_api_client.fetch_run_info_request()
                 if not run_info_list:
                     raise Exception("Fatal Error: Could not fetch run info")
 
                 best_run = get_miner_pool_run(run_info_list=run_info_list)
-                logger.info(f"✅ Best run for miner {self.hotkey[:8]} is {best_run.run_id}")
+                logger.info(f"✅ Best run for training node {self.hotkey[:8]} is {best_run.run_id}")
 
                 logger.info(
-                    f"🔄 Attempting to register miner {self.hotkey[:8]} on run {best_run.run_id} with orchestrator..."
+                    f"🔄 Attempting to register training node {self.hotkey[:8]} on run {best_run.run_id} with orchestrator..."
                 )
                 register_request = RegisterMinerRequest(run_id=best_run.run_id, register_as_metagraph_miner=False)
                 response: MinerRegistrationResponse = await self.miner_api_client.register_miner_request(
@@ -173,13 +173,13 @@ class Miner(BaseMiner):
 
                 if response.layer is None:
                     raise Exception(
-                        f"Miner {self.hotkey[:8]} registered with no layer assigned, this should not happen"
+                        f"Training node {self.hotkey[:8]} registered with no layer assigned, this should not happen"
                     )
 
                 if response.num_partitions is None:
-                    raise Exception(f"Number of partitions is None for miner {self.hotkey[:8]}")
+                    raise Exception(f"Number of partitions is None for training node {self.hotkey[:8]}")
 
-                logger.debug(f"Number of partitions for miner {self.hotkey[:8]}: {response.num_partitions}")
+                logger.debug(f"Number of partitions for training node {self.hotkey[:8]}: {response.num_partitions}")
 
                 self.model_manager.num_partitions = int(response.num_partitions)
                 self.num_partitions = int(response.num_partitions)
@@ -196,9 +196,9 @@ class Miner(BaseMiner):
                 _ = await self.miner_api_client.change_payout_coldkey_request(self._selected_payout_coldkey)
 
                 logger.success(
-                    f"✅ Miner {self.hotkey[:8]} registered successfully in layer {self.state_manager.layer} on training epoch {current_epoch}"
+                    f"✅ Training node {self.hotkey[:8]} registered successfully in layer {self.state_manager.layer} on training epoch {current_epoch}"
                 )
-                logger.debug(f"Run flags for miner {self.hotkey[:8]}: {RUN_FLAGS}")
+                logger.debug(f"Run flags for training node {self.hotkey[:8]}: {RUN_FLAGS}")
 
                 self.stats_tracker.reset()
                 self.stats_tracker.set_layer(self.state_manager.layer)
@@ -212,7 +212,7 @@ class Miner(BaseMiner):
                 raise
 
             except Exception as e:
-                logger.exception(f"Error registering miner: {e}")
+                logger.exception(f"Error registering training node: {e}")
                 await asyncio.sleep(10)
 
     async def run_miner(self):
