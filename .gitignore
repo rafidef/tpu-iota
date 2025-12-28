@@ -22,10 +22,15 @@ sdist/
 var/
 wheels/
 *.egg-info/
+**/*.egg-info/
+src/*.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
-.env*
+.env
+.env.local
+.env.*.local
+!.env.example
 weights_log.csv
 *weight_cache*
 # UV package manager

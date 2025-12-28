@@ -6,7 +6,10 @@ from common import settings as common_settings
 
 
 DOTENV_PATH = os.getenv("DOTENV_PATH", ".env")
-load_dotenv(dotenv_path=DOTENV_PATH)
+if os.path.exists(DOTENV_PATH):
+    load_dotenv(dotenv_path=DOTENV_PATH)
+else:
+    logger.debug(f"No .env file found at {DOTENV_PATH}, using defaults/environment variables")
 
 
 def detect_device() -> str:
