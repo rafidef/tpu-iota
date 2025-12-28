@@ -1,3 +1,8 @@
+# CRITICAL: Set PJRT_DEVICE before ANY imports to ensure TPU works correctly
+import os
+if os.getenv("DEVICE", "").lower() == "xla":
+    os.environ.setdefault("PJRT_DEVICE", "TPU")
+
 import multiprocessing
 
 # this is neccessary to avoid accidental multiprocessing fork-bomb when compiled
