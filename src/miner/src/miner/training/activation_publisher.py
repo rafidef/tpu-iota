@@ -12,20 +12,21 @@ from common.models.api_models import (
     MinerAttestationPayload,
     SubmitActivationRequest,
 )
-from common.models.run_flags import RUN_FLAGS
+from common.models.run_flags import RunFlags, RUN_FLAGS
 from common.utils.exceptions import LayerStateException, MinerNotRegisteredException
 from miner.utils.attestation_utils import AttestationUnavailableError, collect_attestation_payload
 from miner.utils.utils import upload_tensor
 from subnet.miner_api_client import MinerAPIClient
 
-from miner.pool.stats import StatsTracker, tensor_num_bytes
+from miner.utils.stats import StatsTracker, tensor_num_bytes
 
 
 class ActivationPublisher:
-    def __init__(self, miner_api_client: MinerAPIClient):
+    def __init__(self, miner_api_client: MinerAPIClient, run_flags: RunFlags | None = None):
         self._miner_api_client = miner_api_client
         self._publishing_tasks: list[asyncio.Task] = []
         self._stats_tracker: StatsTracker | None = None
+        self._run_flags: RunFlags = run_flags or RUN_FLAGS
 
     def attach_stats_tracker(self, tracker: StatsTracker | None) -> None:
         """Attach a stats tracker for dashboard metrics."""
@@ -89,6 +90,7 @@ class ActivationPublisher:
                     hotkey=self._miner_api_client.hotkey,
                     upload_urls=upload_url,
                     object_name=activation_path,
+                    run_flags=self._run_flags,
                 )
                 logger.debug(f"tensor shape before upload:{tensor.shape}")
                 if self._stats_tracker is not None:
@@ -96,7 +98,7 @@ class ActivationPublisher:
                     self._stats_tracker.record_upload(bytes_uploaded)
 
                 attestation_payload: MinerAttestationPayload | None = None
-                if RUN_FLAGS.attest.isOn():
+                if self._run_flags.attest.isOn():
                     try:
                         challenge = AttestationChallengeResponse(
                             challenge_blob=attestation_challenge_blob,

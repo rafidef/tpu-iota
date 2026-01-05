@@ -21,7 +21,8 @@ from subnet.model.model_mixin import ModelManager
 from common.utils.exceptions import LayerStateException, MinerNotRegisteredException
 from miner import settings as miner_settings
 
-from miner.pool.stats import StatsTracker, tensor_num_bytes
+from miner.utils.stats import StatsTracker, tensor_num_bytes
+from common.models.run_flags import RunFlags
 
 
 class DownloadedData(BaseModel):
@@ -41,12 +42,19 @@ class ActivationQueue:
     """
 
     def __init__(
-        self, miner_api_client: MinerAPIClient, state_manager: StateManager, activation_cache: ActivationCache
+        self,
+        miner_api_client: MinerAPIClient,
+        state_manager: StateManager,
+        activation_cache: ActivationCache,
+        mock: bool,
+        run_flags: RunFlags,
     ):
         self._miner_api_client: MinerAPIClient = miner_api_client
         self._state_manager: StateManager = state_manager
         self._cache: ActivationCache = activation_cache
         self._stats_tracker: StatsTracker | None = None
+        self._mock = mock
+        self._run_flags = run_flags
 
         self._queue_lock: asyncio.Lock = asyncio.Lock()
         self._forward_queue: deque[ActivationData] = deque()
@@ -305,6 +313,8 @@ class ActivationQueue:
                                 download_url=activation_response.presigned_download_url,
                                 tokenizer=self._model_manager.tokenizer,
                                 device="cpu",
+                                mock=self._mock,
+                                run_flags=self._run_flags,
                             ),
                             timeout=common_settings.S3_DOWNLOAD_TIMEOUT,
                         )
@@ -313,10 +323,11 @@ class ActivationQueue:
                             download_tensor(
                                 path=activation_response.presigned_download_url,
                                 device="cpu",
+                                run_flags=self._run_flags,
                             ),
                             timeout=common_settings.S3_DOWNLOAD_TIMEOUT,
                         )
-                        if not common_settings.MOCK:
+                        if not self._mock:
                             input_activations = input_activations.reshape(
                                 common_settings.MINI_BATCH_SIZE,
                                 common_settings.SEQUENCE_LENGTH,
@@ -341,6 +352,8 @@ class ActivationQueue:
                                 download_url=activation_response.target_download_url,
                                 tokenizer=self._model_manager.tokenizer,
                                 device="cpu",
+                                mock=self._mock,
+                                run_flags=self._run_flags,
                             ),
                             timeout=common_settings.S3_DOWNLOAD_TIMEOUT,
                         )

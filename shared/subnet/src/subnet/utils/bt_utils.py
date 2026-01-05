@@ -1,5 +1,6 @@
 from hashlib import sha256
 import bittensor as bt
+from bittensor.core.subtensor import Subtensor
 from bittensor_wallet import Keypair
 from bittensor_wallet.mock import get_mock_wallet
 from loguru import logger
@@ -12,6 +13,21 @@ def _log_retry_attempt(retry_state):
     """Log when a retry attempt is made."""
     attempt_number = retry_state.attempt_number
     logger.warning(f"🔄 Retry attempt {attempt_number} for getting subtensor on network {common_settings.NETWORK}")
+
+
+def create_subtensor_client() -> bt.subtensor:
+    """Build a subtensor client honoring custom endpoints if provided."""
+    config = Subtensor.config()
+    config.subtensor.network = common_settings.NETWORK
+
+    if common_settings.SUBTENSOR_ENDPOINT:
+        config.subtensor.chain_endpoint = common_settings.SUBTENSOR_ENDPOINT
+        logger.info(f"🔄 Using custom subtensor endpoint: {config.subtensor.chain_endpoint}")
+
+    return bt.subtensor(
+        network=common_settings.NETWORK,
+        config=config,
+    )
 
 
 # retry but if it fails, it will raise an error
@@ -38,7 +54,7 @@ def get_subtensor() -> bt.subtensor:
 
     elif common_settings.BITTENSOR:
         logger.info("🔄 Using subtensor")
-        return bt.subtensor(network=common_settings.NETWORK)
+        return create_subtensor_client()
     else:
         raise Exception("No subtensor found")
 

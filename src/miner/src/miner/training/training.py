@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from common.models.run_flags import RUN_FLAGS
+from common.models.run_flags import RunFlags
 from miner.utils.timer_logger import TimerLoggerMiner
 import torch
 from loguru import logger
@@ -20,7 +20,7 @@ from subnet.model.model_mixin import ModelManager
 from subnet.model.utils import compute_loss, log_gpu_memory_usage
 from subnet.model import gpu_device
 
-from miner.pool.stats import StatsTracker
+from miner.utils.stats import StatsTracker
 
 
 class TrainingPhase:
@@ -29,18 +29,26 @@ class TrainingPhase:
         miner_api_client: MinerAPIClient,
         state_manager: StateManager,
         model_manager: ModelManager,
+        device: str,
+        run_flags: RunFlags,
+        mock: bool,
     ):
         self._miner_api_client = miner_api_client
         self._state_manager = state_manager
         self._model_manager = model_manager
         self._hotkey = miner_api_client.hotkey.ss58_address
+        self._device = device
+        self._run_flags = run_flags
+        self._mock = mock
         self._cache: ActivationCache = ActivationCache(miner_api_client=self._miner_api_client)
         self._queue: ActivationQueue = ActivationQueue(
             miner_api_client=self._miner_api_client,
             state_manager=self._state_manager,
             activation_cache=self._cache,
+            mock=self._mock,
+            run_flags=self._run_flags,
         )
-        self._publisher = ActivationPublisher(miner_api_client=self._miner_api_client)
+        self._publisher = ActivationPublisher(miner_api_client=self._miner_api_client, run_flags=self._run_flags)
         self._stats_tracker: StatsTracker | None = None
         self.backwards_since_reset = 0
         self.backwards_since_last_optim = 0
@@ -134,8 +142,8 @@ class TrainingPhase:
                     logger.debug(f"Got activation shape: {activation_data.input_activations.shape}")
 
                 # Move to GPU
-                self._model_manager.model = self._model_manager.model.to(miner_settings.DEVICE)
-                input_activations_gpu = activation_data.input_activations.to(miner_settings.DEVICE)
+                self._model_manager.model = self._model_manager.model.to(self._device)
+                input_activations_gpu = activation_data.input_activations.to(self._device)
 
                 # populate cache
                 # activation_data.state = state
@@ -215,13 +223,11 @@ class TrainingPhase:
                             return
 
                         # Move to GPU and enable gradients only for floating point tensors
-                        self._model_manager.model = self._model_manager.model.to(miner_settings.DEVICE)
+                        self._model_manager.model = self._model_manager.model.to(self._device)
                         cached_input_activation = self._cache[activation_data.activation_id].input_activations.to(
-                            miner_settings.DEVICE
+                            self._device
                         )
-                        backwards_grads_from_previous_miner = activation_data.input_activations.to(
-                            miner_settings.DEVICE
-                        )
+                        backwards_grads_from_previous_miner = activation_data.input_activations.to(self._device)
 
                         # Take slices
                         sliced_cached_input_activation = (
@@ -287,7 +293,7 @@ class TrainingPhase:
                     log_gpu_memory_usage(note="after backward pass")
 
                     # Handle different cases for input activation gradients
-                    if common_settings.MOCK:
+                    if self._mock:
                         input_activation_grads = sliced_cached_input_activation.detach().to(torch.bfloat16).cpu()
 
                     elif self._state_manager.layer == 0:
@@ -385,7 +391,7 @@ class TrainingPhase:
             # NOTE: targets are on the CPU at this point
             # the problem is that loss calculation is very heavy on the GPU memory
             # on A4000 a 1B, when on GPU, it took 0.03s to compute the loss - on the CPU performance it took 0.5s
-            device = miner_settings.DEVICE
+            device = self._device
             if device != "cpu":
                 gpu_device.synchronize()
                 gpu_device.empty_cache()
@@ -399,7 +405,7 @@ class TrainingPhase:
                     )
 
             loss: torch.Tensor = compute_loss(
-                mock=common_settings.MOCK,
+                mock=self._mock,
                 logits=logits,
                 targets=targets,
                 vocab_size=self._model_manager.vocab_size,
@@ -431,6 +437,6 @@ class TrainingPhase:
         self.backwards_since_last_optim = 0
 
         # we can't process backwards activations on forwards processed before the optimization step
-        if RUN_FLAGS.keep_cache_on_local_step.isOff():
+        if self._run_flags.keep_cache_on_local_step.isOff():
             await self._cache.reset()
         log_gpu_memory_usage(note="after cache reset")

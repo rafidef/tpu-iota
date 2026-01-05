@@ -10,6 +10,7 @@ from common.utils.s3_utils import filter_exceptions
 from common.utils.partitions import get_start_and_end_indices
 from loguru import logger
 from miner import settings as miner_settings
+from common.models.run_flags import RUN_FLAGS, RunFlags
 from miner.utils.utils import download_metadata, upload_tensor
 
 from subnet.miner_api_client import MinerAPIClient
@@ -294,16 +295,19 @@ def reconstruct_outer_optimizer_from_partial_state(
 
 
 def reconstruct_full_grads_from_partition(
-    grads_partition: torch.Tensor, start_idx: int, end_idx: int, pseudograds_length: int, model: torch.nn.Module
+    grads_partition: torch.Tensor,
+    start_idx: int,
+    end_idx: int,
+    pseudograds_length: int,
+    model: torch.nn.Module,
+    device: str,
 ):
     """Reconstruct the full grads (.grads) of a model from a partition of grads tensor."""
 
     # Log this operation
     logger.debug("Reconstructing full grads from partition")
 
-    full_flat_vector = torch.full(
-        (pseudograds_length,), float("inf"), dtype=torch.bfloat16, device=miner_settings.DEVICE
-    )
+    full_flat_vector = torch.full((pseudograds_length,), float("inf"), dtype=torch.bfloat16, device=device)
     full_flat_vector[start_idx:end_idx] = grads_partition
     load_grads_from_flat_vector(model=model, grad_vector=full_flat_vector)
 
@@ -415,6 +419,7 @@ async def merge_partition_batch(
                 end_idx=weight_end_idx,
                 pseudograds_length=total_states,
                 model=old_model_copy,
+                device=device,
             )
             log_gpu_memory_usage(
                 note=f"after reconstructing full grads for partition {partition.new_partition.chunk_number}"
@@ -533,6 +538,7 @@ async def upload_partition_batch(
     miner_api_client: MinerAPIClient,
     merged_partitions: list[MergingPartition],
     hotkey: Keypair,
+    run_flags: RunFlags = RUN_FLAGS,
 ) -> list[MinerPartition]:
     weight_uploads = []
     optimizer_state_uploads = []
@@ -552,6 +558,7 @@ async def upload_partition_batch(
                     miner_api_client=miner_api_client,
                     file_type="weights",
                     hotkey=hotkey,
+                    run_flags=run_flags,
                 )
             )
             optimizer_state_uploads.append(
@@ -560,6 +567,7 @@ async def upload_partition_batch(
                     miner_api_client=miner_api_client,
                     file_type="optimizer_state",
                     hotkey=hotkey,
+                    run_flags=run_flags,
                 )
             )
             logger.debug(f"Local optimizer state: {partition.local_optimizer_state.shape}")
@@ -569,6 +577,7 @@ async def upload_partition_batch(
                     miner_api_client=miner_api_client,
                     file_type="local_optimizer_state",
                     hotkey=hotkey,
+                    run_flags=run_flags,
                 )
             )
         logger.debug(f"Weight uploads before upload: {len(weight_uploads)}")

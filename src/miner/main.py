@@ -1,4 +1,5 @@
 import sys
+import os
 import asyncio
 from loguru import logger
 
@@ -30,12 +31,17 @@ def main():
     logger.info("Starting miner")
     logger.info(f"Wallet: {miner_settings.WALLET_NAME}")
     logger.info(f"Hotkey: {miner_settings.WALLET_HOTKEY}")
-    logger.info(f"Device: {miner_settings.DEVICE}")
+    resolved_device = os.getenv("DEVICE") or miner_settings.detect_device()
+    logger.info(f"Device: {resolved_device}")
     logger.info(f"Timeout: {miner_settings.TIMEOUT}s")
 
     try:
         # Create miner instance
-        miner = Miner(wallet_name=miner_settings.WALLET_NAME, wallet_hotkey=miner_settings.WALLET_HOTKEY)
+        miner = Miner(
+            wallet_name=miner_settings.WALLET_NAME,
+            wallet_hotkey=miner_settings.WALLET_HOTKEY,
+            device=resolved_device,
+        )
 
         # Run the miner
         asyncio.run(miner.run_miner())

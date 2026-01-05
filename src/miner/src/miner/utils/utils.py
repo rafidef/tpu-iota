@@ -23,7 +23,7 @@ from common.utils.s3_utils import download_file
 from loguru import logger
 from subnet.utils.vector_utils import check_for_nans_and_infs
 from subnet.miner_api_client import MinerAPIClient
-from common.models.run_flags import RUN_FLAGS
+from common.models.run_flags import RUN_FLAGS, RunFlags
 
 
 # OBSOLETE
@@ -120,6 +120,7 @@ async def upload_file(
     data: bytes,
     file_type: Literal["weights", "optimizer_state", "weights_metadata", "optimizer_state_metadata"],
     file_upload_response: Optional[FileUploadResponse | FileUploadResponse] = None,
+    run_flags: RunFlags = RUN_FLAGS,
 ) -> str | dict:
     """
     Uploads a file to the orchestrator. To upload, we need to:
@@ -170,7 +171,7 @@ async def upload_file(
             if isinstance(file_upload_response, dict):
                 return file_upload_response
 
-        if RUN_FLAGS.compress_s3_files.isOn():
+        if run_flags.compress_s3_files.isOn():
             data = gzip.compress(data)
 
         # Upload data to presigned urls
@@ -215,6 +216,7 @@ async def upload_tensor(
     file_type: Literal["activation", "weights", "optimizer_state", "local_optimizer_state"] = "activation",
     upload_urls: list[str] | None = None,
     object_name: str | None = None,
+    run_flags: RunFlags = RUN_FLAGS,
 ) -> CompleteFileUploadResponse:
     """
     Upload a tensor to the orchestrator.
@@ -260,7 +262,7 @@ async def upload_tensor(
     if multipart:
         assert upload_urls is None, "Passing upload_urls which are only valid for single part uploads"
 
-    if RUN_FLAGS.compress_s3_files.isOn():
+    if run_flags.compress_s3_files.isOn():
         payload = gzip.compress(tensor)
     else:
         payload = tensor

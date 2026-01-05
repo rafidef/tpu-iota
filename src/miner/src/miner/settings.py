@@ -35,13 +35,6 @@ def detect_device() -> str:
     return "cpu"
 
 
-def set_device(device: str) -> None:
-    """Update the global torch device selection."""
-    global DEVICE
-    DEVICE = device
-    os.environ["DEVICE"] = device
-
-
 # Wallet
 WALLET_NAME = os.getenv("MINER_WALLET", "test")
 WALLET_HOTKEY = os.getenv("MINER_HOTKEY", "m1")
@@ -52,8 +45,8 @@ MINER_HEALTH_ENDPOINT = os.getenv("MINER_HEALTH_ENDPOINT", "/health")
 
 LAUNCH_HEALTH = os.getenv("LAUNCH_HEALTH") == "True"
 
-DEVICE = os.getenv("DEVICE") or detect_device()
-os.environ.setdefault("DEVICE", DEVICE)
+DEFAULT_DEVICE = os.getenv("DEVICE") or detect_device()
+os.environ.setdefault("DEVICE", DEFAULT_DEVICE)
 
 # Training settings
 TIMEOUT = int(os.getenv("MINER_TIMEOUT", "300"))  # 5 minutes default

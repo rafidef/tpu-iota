@@ -61,9 +61,10 @@ class HealthServerMixin:
                 }
             )
 
-        app.router.add_get(miner_settings.MINER_HEALTH_ENDPOINT, health_handler)
+        endpoint = getattr(self, "health_endpoint", miner_settings.MINER_HEALTH_ENDPOINT)
+        app.router.add_get(endpoint, health_handler)
 
-        if miner_settings.LAUNCH_HEALTH:
+        if getattr(self, "launch_health", miner_settings.LAUNCH_HEALTH):
             max_retries = 2
             for attempt in range(max_retries):
                 # Clean up any existing site/runner before creating new ones
@@ -84,15 +85,17 @@ class HealthServerMixin:
                 self.health_app_runner = web.AppRunner(app)
                 await self.health_app_runner.setup()
 
-                self.health_site = web.TCPSite(
-                    self.health_app_runner, miner_settings.MINER_HEALTH_HOST, miner_settings.MINER_HEALTH_PORT
-                )
+                host = getattr(self, "health_host", miner_settings.MINER_HEALTH_HOST)
+                port = getattr(self, "health_port", miner_settings.MINER_HEALTH_PORT)
+                endpoint = getattr(self, "health_endpoint", miner_settings.MINER_HEALTH_ENDPOINT)
+
+                self.health_site = web.TCPSite(self.health_app_runner, host, port)
 
                 try:
                     await self.health_site.start()
                     logger.info(
                         f"Miner {getattr(self, 'hotkey', 'N/A')} healthcheck API started on "
-                        f"http://{miner_settings.MINER_HEALTH_HOST}:{miner_settings.MINER_HEALTH_PORT}{miner_settings.MINER_HEALTH_ENDPOINT}"
+                        f"http://{host}:{port}{endpoint}"
                     )
                     break
                 except OSError as e:

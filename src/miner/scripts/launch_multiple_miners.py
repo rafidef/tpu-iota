@@ -5,6 +5,8 @@ Simple script to launch multiple miners concurrently.
 
 import argparse
 import asyncio
+import logging
+import logging.handlers
 import os
 import re
 import subprocess
@@ -13,8 +15,36 @@ import signal
 from datetime import datetime
 from multiprocessing import Process
 import time
+from urllib.parse import urlparse
+import io
+import contextlib
 
 from loguru import logger
+import bittensor as bt
+
+
+# The multiprocessing logging QueueListener crashes with EOFError when the queue
+# disappears during interpreter shutdown. That shows up as a noisy traceback in
+# start-miners-uv. Patch dequeue to treat EOF as a sentinel so the monitor
+# thread exits quietly.
+def _patch_queue_listener_eof_handling() -> None:
+    listener_cls = logging.handlers.QueueListener
+    if getattr(listener_cls, "_iota_eof_patched", False):
+        return
+
+    original_dequeue = listener_cls.dequeue
+
+    def _safe_dequeue(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        try:
+            return original_dequeue(self, *args, **kwargs)
+        except EOFError:
+            return self._sentinel
+
+    listener_cls.dequeue = _safe_dequeue  # type: ignore[assignment]
+    listener_cls._iota_eof_patched = True  # type: ignore[attr-defined]
+
+
+_patch_queue_listener_eof_handling()
 
 # Add the miner package to the path
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -111,10 +141,29 @@ def run_single_miner_process(wallet_name: str, wallet_hotkey: str, miner_id: int
             colorize=False,
         )
 
+    def _is_local_subtensor() -> bool:
+        endpoint = common_settings.SUBTENSOR_ENDPOINT or ""
+        parsed = urlparse(endpoint)
+        host = parsed.hostname or ""
+        return common_settings.NETWORK == "local" or host in {"127.0.0.1", "localhost"}
+
+    # Provision local wallets/hotkeys if missing when pointing at a local subtensor (helps local dev).
+    wallet: bt.wallet | None = None
+    if common_settings.BITTENSOR and _is_local_subtensor():
+        wallet = bt.wallet(name=wallet_name, hotkey=wallet_hotkey)
+        if not wallet.coldkey_file.exists_on_device():
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                wallet.create_new_coldkey(use_password=False, overwrite=True)
+            logger.info(f"Created coldkey for wallet {wallet_name}")
+        if not wallet.hotkey_file.exists_on_device():
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                wallet.create_new_hotkey(use_password=False, overwrite=True)
+            logger.info(f"Created hotkey {wallet_hotkey} for wallet {wallet_name}")
+
     async def run_miner():
         try:
             logger.info(f"Starting miner {miner_id} with wallet_name={wallet_name}, wallet_hotkey={wallet_hotkey}")
-            miner = Miner(wallet_name=wallet_name, wallet_hotkey=wallet_hotkey)
+            miner = Miner(wallet_name=wallet_name, wallet_hotkey=wallet_hotkey, wallet=wallet)
             await miner.run_miner()
         except Exception as e:
             logger.exception(f"Error in miner {miner_id}: {e}")

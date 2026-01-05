@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import multiprocessing
+import os
 import sys
 import threading
 import time
@@ -57,7 +58,7 @@ from common.utils.exceptions import (
 )
 from common.utils.partitions import MinerPartition
 from common.utils.shared_states import LayerPhase
-from common.models.run_flags import RUN_FLAGS, update_run_flags  # noqa: F401
+from common.models.run_flags import RUN_FLAGS, RunFlags
 from subnet.base.base_neuron import BaseNeuron
 from subnet.miner_api_client import MinerAPIClient
 from subnet.model.utils import _clean_gpu_memory, log_gpu_memory_usage
@@ -73,8 +74,33 @@ from subnet.model import gpu_device
 
 
 class Miner(BaseNeuron, HealthServerMixin):
-    def __init__(self, wallet_name: str | None = None, wallet_hotkey: str | None = None, wallet: Wallet | None = None):
+    def __init__(
+        self,
+        wallet_name: str | None = None,
+        wallet_hotkey: str | None = None,
+        wallet: Wallet | None = None,
+        device: str | None = None,
+        run_flags: RunFlags | None = None,
+        mock: bool | None = None,
+        health_host: str | None = None,
+        health_port: int | None = None,
+        health_endpoint: str | None = None,
+        launch_health: bool | None = None,
+        visualization_port: int | None = None,
+        visualization_auto_open: bool | None = None,
+    ):
         super().__init__()
+        self.device = device or os.getenv("DEVICE") or miner_settings.detect_device()
+        self.run_flags: RunFlags = run_flags.model_copy(deep=True) if run_flags else RUN_FLAGS.model_copy(deep=True)
+        self.mock = common_settings.MOCK if mock is None else mock
+        self.health_host = health_host or miner_settings.MINER_HEALTH_HOST
+        self.health_port = health_port or miner_settings.MINER_HEALTH_PORT
+        self.health_endpoint = health_endpoint or miner_settings.MINER_HEALTH_ENDPOINT
+        self.launch_health = miner_settings.LAUNCH_HEALTH if launch_health is None else launch_health
+        self.visualization_port = visualization_port or 8009
+        self.visualization_auto_open = (
+            miner_settings.VISUALIZATION_AUTO_OPEN if visualization_auto_open is None else visualization_auto_open
+        )
         self.init_neuron(wallet_name=wallet_name, wallet_hotkey=wallet_hotkey, wallet=wallet)
         self.state_manager: StateManager = StateManager(wallet=self.wallet)
         self.weights_submitted: bool = False
@@ -85,12 +111,15 @@ class Miner(BaseNeuron, HealthServerMixin):
             miner_api_client=self.miner_api_client,
             state_manager=self.state_manager,
             model_manager=self.model_manager,
+            device=self.device,
+            run_flags=self.run_flags,
+            mock=self.mock,
         )
         self._latest_attestation_payloads: dict[str, MinerAttestationPayload] = {}
         self.visualization_process: multiprocessing.Process | None = None
 
     async def _collect_attestation_payload(self, action: str) -> MinerAttestationPayload | None:
-        if RUN_FLAGS.attest.isOff():
+        if self.run_flags.attest.isOff():
             return None
 
         challenge_response = await self.miner_api_client.request_attestation_challenge(action=action)
@@ -116,11 +145,12 @@ class Miner(BaseNeuron, HealthServerMixin):
             logger.exception(f"Error collecting attestation for action {action}: {exc}")
         return None
 
-    def _start_visualization_server_process(self, port: int = 8009):
+    def _start_visualization_server_process(self, port: int | None = None):
         """Start the visualization server in a separate process."""
         try:
+            target_port = port or self.visualization_port
             self.visualization_process = multiprocessing.Process(
-                target=start_visualization_server, args=(port,), daemon=True, name="VisualizationServer"
+                target=start_visualization_server, args=(target_port,), daemon=True, name="VisualizationServer"
             )
             self.visualization_process.start()
             logger.info(f"✅ Visualization server started in separate process (PID: {self.visualization_process.pid})")
@@ -151,7 +181,177 @@ class Miner(BaseNeuron, HealthServerMixin):
 
         threading.Thread(target=_open, name="VisualizationTabOpener", daemon=True).start()
 
+    def _update_run_flags(self, new_flags: RunFlags) -> None:
+        """Update this miner's run flags in-place."""
+        for field_name in new_flags.model_fields:
+            new_flag = getattr(new_flags, field_name)
+            current_flag = getattr(self.run_flags, field_name, None)
+            if current_flag is not None:
+                current_flag.enabled = new_flag.enabled
+                current_flag.version = new_flag.version
+            else:
+                setattr(self.run_flags, field_name, new_flag)
+
+    async def training_loop_tick(self):
+        """Single iteration of the training loop, handling state-specific work."""
+        with logger.contextualize(
+            hotkey=self.hotkey[:8],
+            run_id=self.state_manager.run_id,
+            layer=self.state_manager.layer,
+        ):
+            if not await CommonAPIClient.check_orchestrator_health(hotkey=self.wallet.hotkey):
+                logger.info(f"🔄 Orchestrator health check failed for miner {self.wallet.hotkey.ss58_address[:8]}")
+                await asyncio.sleep(5)
+                return
+
+            allocated_memory = gpu_device.allocated_memory() / 1024**3  # GB
+            logger.debug(f"💾 GPU memory: {allocated_memory:.2f}GB")
+
+            logger.info(
+                f"🔄 Miner {self.hotkey[:8]} in Layer {self.state_manager.layer} is in state: {self.miner_api_client.layer_state}"
+            )
+
+            if self.miner_api_client.layer_state == LayerPhase.TRAINING:
+                if self.need_to_pull_weights:
+                    try:
+                        async with TimerLoggerMiner(
+                            name="download_and_set_global_weights",
+                            metadata={"hotkey": self.hotkey[:8], "layer": self.state_manager.layer},
+                            hotkey=self.hotkey[:8],
+                        ):
+                            await self.download_and_set_global_weights(
+                                device=self.device,
+                                client=self.miner_api_client,
+                                download_local_optimizer_state=False,
+                            )
+                    except Exception as e:
+                        logger.exception(f"Error downloading and setting weights: {e}")
+                    finally:
+                        save_model_weights_and_optimizer_state(
+                            model_weights=torch.nn.utils.parameters_to_vector(self.model_manager.model.parameters()),
+                            optimizer_state_dict=self.model_manager.optimizer.state_dict(),
+                            hotkey=self.hotkey,
+                            run_id=self.state_manager.run_id,
+                            layer_idx=self.state_manager.layer,
+                        )
+                        logger.info(f"Saved current model weights and optimizer state for miner {self.hotkey[:8]}")
+
+                self.need_to_pull_weights = False
+                self.weights_submitted = False
+                self.partitions_submitted = False
+                await self.training_phase.run()
+                await asyncio.sleep(1.1)
+                return
+
+            if self.miner_api_client.layer_state == LayerPhase.WEIGHTS_UPLOADING:
+                self.need_to_pull_weights = True
+                logger.info(
+                    f"\n\n\n\n\n\n\n\n 🔄 Miner in layer {self.state_manager.layer} submitting weights state!\n\n\n\n\n\n\n\n"
+                )
+                if self.weights_submitted:
+                    logger.debug(f"Weights already submitted for miner {self.hotkey[:8]}, skipping")
+                else:
+                    await self.submit_weights()
+                    self.weights_submitted = True
+                logger.info("🔄 Miner submitted weights, switching to merging partitions")
+                await wait_for_state(state=LayerPhase.MERGING_PARTITIONS, miner_api_client=self.miner_api_client)
+                return
+
+            if self.miner_api_client.layer_state == LayerPhase.MERGING_PARTITIONS:
+                self.need_to_pull_weights = True
+                logger.info(
+                    f"\n\n\n\n\n\n\n\n 🔄 Miner in layer {self.state_manager.layer} merging partitions state!\n\n\n\n\n\n\n\n"
+                )
+                if not self.partitions_submitted:
+                    logger.info("🔄 Miner getting weight partition info")
+                    weight_path_per_layer, partitions = await get_weight_partition_info(
+                        layer=self.state_manager.layer, miner_api_client=self.miner_api_client
+                    )
+
+                    if not partitions:
+                        logger.info("🔄 Miner has no partitions to merge")
+                        await asyncio.sleep(1.1)
+                        return
+
+                    logger.info(f"🔄 Miner starting merging partitions: {[p.chunk_number for p in partitions]}")
+                    await self.merge_partitions(
+                        weight_path_per_layer=weight_path_per_layer,
+                        partitions=partitions,
+                    )
+                    logger.info("🔄 Miner finished merged partitions")
+
+                    self.partitions_submitted = True
+                    await wait_for_state(state=LayerPhase.TRAINING, miner_api_client=self.miner_api_client)
+
+                else:
+                    logger.info(f"🔄 Miner {self.hotkey[:8]} already submitted partitions, skipping...")
+                    await wait_for_state(state=LayerPhase.TRAINING, miner_api_client=self.miner_api_client)
+
+                self.model_manager.epoch_counter += 1
+                return
+
+            await asyncio.sleep(1.1)
+
+    async def training_loop(self):
+        """Main training loop delegating to tick with existing error handling."""
+        while True:
+            try:
+                await self.training_loop_tick()
+            except RunFullException as e:
+                logger.warning(
+                    f"🔄 Miner {self.hotkey[:8]} cannot join run because it is full. Retrying in 60 seconds: {e}"
+                )
+                await asyncio.sleep(60)
+                await self.reset_miner_state()
+                continue
+            except LayerStateException as e:
+                logger.info(f"🔄 Miner {self.hotkey[:8]} layer state change...: {e}")
+                continue
+            except MinerNotRegisteredException as e:
+                logger.info(f"🔄 Miner {self.hotkey[:8]} miner not registered error: {e}")
+                await self.reset_miner_state()
+                continue
+            except APIException as e:
+                logger.info(f"🔄 Miner {self.hotkey[:8]} API exception: {e}")
+                continue
+            except RateLimitException as e:
+                logger.info(f"🔄 Miner {self.hotkey[:8]} Rate limit exception: {e}")
+                continue
+            except aiohttp.ClientResponseError as e:
+                logger.info(f"🔄 Miner {self.hotkey[:8]} Client response error: {e}")
+                continue
+            except (aiohttp.ClientConnectorDNSError, aiohttp.ClientConnectorError) as e:
+                logger.warning(f"🔄 Miner {self.hotkey[:8]} Connection error (DNS/network): {e}. Retrying...")
+                await asyncio.sleep(5)
+                continue
+            except (asyncio.TimeoutError, TimeoutError) as e:
+                logger.warning(f"🔄 Miner {self.hotkey[:8]} Timeout error: {e}")
+                continue
+            except SubmittedWeightsError as e:
+                logger.info(f"🔄 Miner {self.hotkey[:8]} Submitted weights error: {e}")
+                continue
+            except WeightPartitionException as e:
+                logger.info(f"🔄 Miner {self.hotkey[:8]} Partition exception: {e}")
+                continue
+            except NanInfWarning as e:
+                logger.info(f"⚠️ Miner {self.hotkey[:8]} NaN/Inf warning: {e}")
+                continue
+            except NanInfException as e:
+                logger.error(f"❌ Miner {self.hotkey[:8]} NaN/Inf exception: {e}")
+                raise
+            except Exception:
+                raise
+
     async def run(self):
+        self._start_visualization_server_process(port=self.visualization_port)
+        if self.visualization_auto_open:
+            self._open_visualization_tab(f"http://localhost:{self.visualization_port}/vis.html")
+
+        await self.reset_miner_state()
+        logger.info(f"🚀 Starting miner {self.hotkey[:8]} on layer {self.layer} | Timeout: {miner_settings.TIMEOUT}s")
+
+        await wait_for_state(state=LayerPhase.TRAINING, miner_api_client=self.miner_api_client, raise_bad_sync=False)
+        await self.training_loop()
         self._start_visualization_server_process(port=8009)
         if miner_settings.VISUALIZATION_AUTO_OPEN:
             self._open_visualization_tab("http://localhost:8009/vis.html")
@@ -194,7 +394,7 @@ class Miner(BaseNeuron, HealthServerMixin):
                                     hotkey=self.hotkey[:8],
                                 ):
                                     await self.download_and_set_global_weights(
-                                        device=miner_settings.DEVICE,
+                                        device=self.device,
                                         client=self.miner_api_client,
                                         download_local_optimizer_state=False,
                                     )
@@ -317,6 +517,55 @@ class Miner(BaseNeuron, HealthServerMixin):
             except Exception:
                 raise
 
+    async def register(self) -> tuple[dict, dict]:
+        """Single registration attempt. Raises on failure for caller to retry."""
+        if common_settings.TEST_MODE:
+            await TestAPIClient.register_to_metagraph(hotkey=self.wallet.hotkey)
+
+        logger.info(f"🔄 Attempting to fetch run info for miner {self.hotkey[:8]}...")
+        run_info_list = await self.miner_api_client.fetch_run_info_request()
+        if not run_info_list:
+            raise Exception("Fatal Error: Could not fetch run info")
+
+        best_run = identify_best_run(run_info_list=run_info_list)
+        logger.info(f"✅ Best run for miner {self.hotkey[:8]} is {best_run.run_id}")
+
+        logger.info(f"🔄 Attempting to register miner {self.hotkey[:8]} on run {best_run.run_id} with orchestrator...")
+        register_request = RegisterMinerRequest(run_id=best_run.run_id, register_as_metagraph_miner=True)
+        response: MinerRegistrationResponse = await self.miner_api_client.register_miner_request(
+            register_miner_request=register_request
+        )
+
+        assigned_layer = int(response.layer)
+        current_epoch = int(response.current_epoch)
+
+        if response.num_partitions is None:
+            raise Exception(f"Number of partitions is None for miner {self.hotkey[:8]}")
+
+        logger.debug(f"Number of partitions for miner {self.hotkey[:8]}: {response.num_partitions}")
+
+        self.model_manager.num_partitions = int(response.num_partitions)
+        self.num_partitions = int(response.num_partitions)
+
+        if response.layer is None:
+            raise Exception(f"Miner {self.hotkey[:8]} registered with no layer assigned, this should not happen")
+
+        # TODO: clean these up
+        self.layer = assigned_layer
+        self.state_manager.layer = assigned_layer
+        self.state_manager.training_epoch_when_registered = current_epoch
+        self.state_manager.run_id = response.run_id
+        self.run_id = response.run_id
+        self.model_manager.epoch_on_registration = current_epoch
+
+        self._update_run_flags(response.run_flags)
+
+        logger.success(
+            f"✅ Miner {self.hotkey[:8]} registered successfully in layer {self.state_manager.layer} on training epoch {current_epoch}"
+        )
+        logger.debug(f"Run flags for miner {self.hotkey[:8]}: {self.run_flags}")
+        return response.model_cfg.model_dump(), response.model_metadata.model_dump()
+
     async def register_loop(self) -> tuple[dict, dict]:
         """
         Register the miner with the orchestrator, acquiring a layer during the process.
@@ -324,57 +573,7 @@ class Miner(BaseNeuron, HealthServerMixin):
         """
         while True:
             try:
-                if common_settings.TEST_MODE:
-                    await TestAPIClient.register_to_metagraph(hotkey=self.wallet.hotkey)
-
-                logger.info(f"🔄 Attempting to fetch run info for miner {self.hotkey[:8]}...")
-                run_info_list = await self.miner_api_client.fetch_run_info_request()
-                if not run_info_list:
-                    raise Exception("Fatal Error: Could not fetch run info")
-
-                best_run = identify_best_run(run_info_list=run_info_list)
-                logger.info(f"✅ Best run for miner {self.hotkey[:8]} is {best_run.run_id}")
-
-                logger.info(
-                    f"🔄 Attempting to register miner {self.hotkey[:8]} on run {best_run.run_id} with orchestrator..."
-                )
-                register_request = RegisterMinerRequest(run_id=best_run.run_id, register_as_metagraph_miner=True)
-                response: MinerRegistrationResponse = await self.miner_api_client.register_miner_request(
-                    register_miner_request=register_request
-                )
-
-                assigned_layer = int(response.layer)
-                current_epoch = int(response.current_epoch)
-
-                if response.num_partitions is None:
-                    raise Exception(f"Number of partitions is None for miner {self.hotkey[:8]}")
-
-                logger.debug(f"Number of partitions for miner {self.hotkey[:8]}: {response.num_partitions}")
-
-                self.model_manager.num_partitions = int(response.num_partitions)
-                self.num_partitions = int(response.num_partitions)
-
-                if response.layer is None:
-                    raise Exception(
-                        f"Miner {self.hotkey[:8]} registered with no layer assigned, this should not happen"
-                    )
-
-                # TODO: clean these up
-                self.layer = assigned_layer
-                self.state_manager.layer = assigned_layer
-                self.state_manager.training_epoch_when_registered = current_epoch
-                self.state_manager.run_id = response.run_id
-                self.run_id = response.run_id
-                self.model_manager.epoch_on_registration = current_epoch
-
-                update_run_flags(response.run_flags)
-
-                logger.success(
-                    f"✅ Miner {self.hotkey[:8]} registered successfully in layer {self.state_manager.layer} on training epoch {current_epoch}"
-                )
-                logger.debug(f"Run flags for miner {self.hotkey[:8]}: {RUN_FLAGS}")
-                return response.model_cfg.model_dump(), response.model_metadata.model_dump()
-
+                return await self.register()
             except RunFullException as e:
                 logger.warning(f"Run is full for miner {self.hotkey[:8]}: {e}")
                 await asyncio.sleep(60)
@@ -471,6 +670,7 @@ class Miner(BaseNeuron, HealthServerMixin):
                     file_type="weights",
                     hotkey=self.wallet.hotkey,
                     miner_api_client=self.miner_api_client,
+                    run_flags=self.run_flags,
                 )
 
                 # Upload metadata as activation type since orchestrator doesn't have a metadata type
@@ -479,6 +679,7 @@ class Miner(BaseNeuron, HealthServerMixin):
                     data=json.dumps(metadata).encode(),
                     file_type="weights_metadata",
                     hotkey=self.wallet.hotkey,
+                    run_flags=self.run_flags,
                 )
 
                 response: dict = await self.miner_api_client.submit_weights(
@@ -514,15 +715,13 @@ class Miner(BaseNeuron, HealthServerMixin):
         logger.info("🚀 Starting miner 🚀")
         try:
             # Start the healthcheck server
-            if miner_settings.LAUNCH_HEALTH:
+            if self.launch_health:
                 try:
-                    killed_process = self._kill_process_on_port(miner_settings.MINER_HEALTH_PORT)
+                    killed_process = self._kill_process_on_port(self.health_port)
                     if killed_process:
-                        logger.warning(
-                            f"Terminated existing process using healthcheck port {miner_settings.MINER_HEALTH_PORT}"
-                        )
+                        logger.warning(f"Terminated existing process using healthcheck port {self.health_port}")
                 except Exception as e:
-                    logger.error(f"Failed to clear healthcheck port {miner_settings.MINER_HEALTH_PORT}: {e}")
+                    logger.error(f"Failed to clear healthcheck port {self.health_port}: {e}")
                 await self._start_health_server()
                 logger.info("🏥 Health server started")
             else:
@@ -611,7 +810,7 @@ class Miner(BaseNeuron, HealthServerMixin):
             model_weights=current_model_weights,
             optimizer_state=current_model_optimizer_state,
             layer=self.state_manager.layer,
-            device=miner_settings.DEVICE,
+            device=self.device,
         ):
             raise Exception("Error setting up local model")
 
@@ -678,7 +877,7 @@ class Miner(BaseNeuron, HealthServerMixin):
                 logger.debug(f"{len(merging_partitions)} batch partitions downloaded previous optimizer state")
 
                 # Determine if we have enough memory in the GPU to merge the partitions on GPU or CPU
-                device = miner_settings.DEVICE
+                device = self.device
                 if device != "cpu":
                     gpu_device.synchronize()
                     gpu_device.empty_cache()
@@ -728,6 +927,7 @@ class Miner(BaseNeuron, HealthServerMixin):
                     merged_partitions=merged_partitions,
                     hotkey=self.wallet.hotkey,
                     miner_api_client=self.miner_api_client,
+                    run_flags=self.run_flags,
                 )
                 logger.debug(f"{len(final_partitions)} batch partitions uploaded")
 
@@ -739,7 +939,7 @@ class Miner(BaseNeuron, HealthServerMixin):
                 )
                 logger.debug(f"{len(final_partitions)} batch partitions submitted")
 
-                self.model_manager.model = self.model_manager.model.to(miner_settings.DEVICE)
+                self.model_manager.model = self.model_manager.model.to(self.device)
 
                 del old_model
                 del merged_partitions  # TODO: @cassova: do a better job of cleaning this up
