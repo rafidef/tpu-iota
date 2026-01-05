@@ -8,7 +8,7 @@ from asyncio.exceptions import TimeoutError
 import aiohttp
 from common.utils.exceptions import NanInfWarning
 from common.models.miner_models import ChunkMetadata
-from common.models.run_flags import RUN_FLAGS
+from common.models.run_flags import RUN_FLAGS, RunFlags
 from subnet.model.utils import log_gpu_memory_usage
 from subnet.utils.vector_utils import check_for_nans_and_infs
 
@@ -38,10 +38,12 @@ class AioHttpClientWithOpenSession:
         return response
 
 
-async def process_response(response: aiohttp.ClientResponse, dtype: torch.dtype, device: str = "cuda") -> torch.Tensor:
+async def process_response(
+    response: aiohttp.ClientResponse, dtype: torch.dtype, device: str = "cuda", run_flags: RunFlags = RUN_FLAGS
+) -> torch.Tensor:
     """Process the response from aiohttp and return a tensor."""
     content = await response.read()
-    if RUN_FLAGS.compress_s3_files.isOn():
+    if run_flags.compress_s3_files.isOn():
         content = gzip.decompress(content)
     loaded_tensor = np.frombuffer(content, dtype=np.uint8)
     loaded_tensor = torch.tensor(loaded_tensor).view(dtype).to(device)
@@ -53,6 +55,7 @@ async def download_tensor(
     dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
     max_retries: int = 3,
+    run_flags: RunFlags = RUN_FLAGS,
 ) -> torch.Tensor:
     """Download bytes and cast into a tensor from S3 storage with retry logic.
 
@@ -74,7 +77,7 @@ async def download_tensor(
             # Create new session for single download
             response = await s3_client.get(path)
             response.raise_for_status()
-            loaded_tensor = await process_response(response=response, dtype=dtype, device=device)
+            loaded_tensor = await process_response(response=response, dtype=dtype, device=device, run_flags=run_flags)
 
             assert isinstance(
                 loaded_tensor, torch.Tensor

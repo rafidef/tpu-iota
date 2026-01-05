@@ -5,7 +5,7 @@ from typing import Any
 
 import aiohttp
 from loguru import logger
-from common.models.run_flags import RUN_FLAGS
+from common.models.run_flags import RUN_FLAGS, RunFlags
 from common import settings as common_settings
 
 
@@ -174,7 +174,7 @@ async def upload_part(urls: list[str], data: bytes, upload_id: str, max_retries:
                     raise
 
 
-async def download_file(presigned_url: str, max_retries: int = 3):
+async def download_file(presigned_url: str, max_retries: int = 3, run_flags: RunFlags = RUN_FLAGS):
     """Download a file from S3 storage with retry logic."""
     timeout = aiohttp.ClientTimeout(total=common_settings.S3_DOWNLOAD_TIMEOUT)
 
@@ -183,7 +183,7 @@ async def download_file(presigned_url: str, max_retries: int = 3):
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(presigned_url) as response:
                     response.raise_for_status()
-                    if RUN_FLAGS.compress_s3_files.isOn():
+                    if run_flags.compress_s3_files.isOn():
                         return gzip.decompress(await response.read())
                     else:
                         return await response.read()

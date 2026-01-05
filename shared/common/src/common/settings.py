@@ -21,6 +21,7 @@ TEST_MODE = os.getenv("TEST_MODE") == "True"
 __SPEC_VERSION__ = 30016
 __VALIDATOR_SPEC_VERSION__ = 5065
 BITTENSOR = os.getenv("BITTENSOR", "True") == "True"
+SUBTENSOR_ENDPOINT = os.getenv("SUBTENSOR_ENDPOINT")
 MAX_NUM_PARTS = int(os.getenv("MAX_NUM_PARTS", 10000))
 NETUID = int(os.getenv("NETUID", "9"))
 NETWORK = os.getenv("NETWORK", "finney")

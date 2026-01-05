@@ -8,10 +8,11 @@ from loguru import logger
 from bittensor import Wallet, Subtensor
 
 
-async def weight_setting_step(wallet: Wallet, subtensor: Subtensor):
+async def weight_setting_step(wallet: Wallet, subtensor: Subtensor, metagraph: bt.metagraph):
     if not (global_weights := await ValidatorAPIClient.get_global_miner_scores(hotkey=wallet.hotkey)):
         logger.warning("No global weights received, temporarily copying weights from the chain")
-        await set_weights(wallet=wallet, subtensor=subtensor, weights=copy_weights_from_chain())
+        weights = copy_weights_from_chain(metagraph=metagraph)
+        await set_weights(wallet=wallet, subtensor=subtensor, weights=weights, metagraph=metagraph)
         return
 
     if "error_name" in global_weights:
@@ -29,10 +30,10 @@ async def weight_setting_step(wallet: Wallet, subtensor: Subtensor):
         logger.error("Error converting global weights to dictionary")
         raise
 
-    await set_weights(wallet=wallet, subtensor=subtensor, weights=global_weights)
+    await set_weights(wallet=wallet, subtensor=subtensor, weights=global_weights, metagraph=metagraph)
 
 
-async def set_weights(wallet: Wallet, subtensor: Subtensor, weights: dict[int, float]):
+async def set_weights(wallet: Wallet, subtensor: Subtensor, weights: dict[int, float], metagraph: bt.metagraph):
     """
     Sets the validator weights to the metagraph hotkeys based on the global weights.
     """
@@ -50,7 +51,7 @@ async def set_weights(wallet: Wallet, subtensor: Subtensor, weights: dict[int, f
         logger.warning("Subtensor not initialized, skipping weight submission")
         return
 
-    if not (metagraph := bt.metagraph(netuid=int(common_settings.NETUID), lite=False, network=common_settings.NETWORK)):
+    if not metagraph:
         logger.warning("Metagraph not initialized, skipping weight submission")
         return
 
@@ -120,22 +121,22 @@ async def set_weights(wallet: Wallet, subtensor: Subtensor, weights: dict[int, f
         logger.exception(f"Error submitting weights to Bittensor: {e}")
 
 
-def copy_weights_from_chain() -> dict[int, float]:
+def copy_weights_from_chain(metagraph: bt.metagraph) -> dict[int, float]:
     """Copy weights from the chain to the validator.
 
     Returns:
         dict[int, float]: A dictionary of weights for each miner.
     """
-    meta: bt.metagraph = bt.metagraph(netuid=int(common_settings.NETUID), lite=False, network=common_settings.NETWORK)
-    valid_indices = np.where(meta.validator_permit)[0]
-    valid_weights = meta.weights[valid_indices]
-    valid_stakes = meta.stake[valid_indices]
+
+    valid_indices = np.where(metagraph.validator_permit)[0]
+    valid_weights = metagraph.weights[valid_indices]
+    valid_stakes = metagraph.stake[valid_indices]
     normalized_stakes = valid_stakes / np.sum(valid_stakes)
     stake_weighted_average = np.dot(normalized_stakes, valid_weights).astype(float).tolist()
 
     # This is for the special case of testnet.
-    if len(meta.uids) == 0:
+    if len(metagraph.uids) == 0:
         logger.warning("No valid indices found in metagraph, returning empty weights")
         return {}
 
-    return dict(zip(meta.uids, list(stake_weighted_average)))
+    return dict(zip(metagraph.uids, list(stake_weighted_average)))

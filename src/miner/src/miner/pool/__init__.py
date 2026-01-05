@@ -1,1 +1,0 @@
-"""Miner pool package."""
