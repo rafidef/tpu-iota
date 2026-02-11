@@ -7,7 +7,9 @@ import sys
 import threading
 import time
 import webbrowser
+from common.utils.verify_enclave_signature import payload_base64_from_obj
 from loguru import logger
+from miner.utils.miner_control_mixin import MinerControlMixin
 from miner.utils.miner_dashboard_api import start_visualization_server
 from miner.utils.partition_merging import download_previous_optimizer_state_for_partition_batch, merge_partition_batch
 from miner.utils.partition_merging import get_partition_batch
@@ -15,6 +17,7 @@ from miner.utils.partition_merging import download_pseudograds_for_partition_bat
 from miner.utils.partition_merging import upload_partition_batch
 from subnet.utils.partition_utils import save_model_weights_and_optimizer_state
 from miner.utils.timer_logger import TimerLoggerMiner
+from miner.utils.stats import StatsTracker
 import torch
 import aiohttp
 from bittensor import Wallet
@@ -34,9 +37,9 @@ from miner.utils.utils import (
 )
 from miner.utils.run_utils import identify_best_run
 from miner.utils.attestation_utils import collect_attestation_payload, AttestationUnavailableError
-from common import settings as common_settings
 from common.models.api_models import (
     AttestationChallengeResponse,
+    EnclaveSignResponse,
     MinerRegistrationResponse,
     MinerAttestationPayload,
     RegisterMinerRequest,
@@ -62,7 +65,6 @@ from common.models.run_flags import RUN_FLAGS, RunFlags
 from subnet.base.base_neuron import BaseNeuron
 from subnet.miner_api_client import MinerAPIClient
 from subnet.model.utils import _clean_gpu_memory, log_gpu_memory_usage
-from subnet.test_client import TestAPIClient
 from subnet.utils.partition_utils import (
     MergingPartition,
     load_model_weights,
@@ -73,7 +75,7 @@ from miner.training import TrainingPhase
 from subnet.model import gpu_device
 
 
-class Miner(BaseNeuron, HealthServerMixin):
+class Miner(BaseNeuron, HealthServerMixin, MinerControlMixin):
     def __init__(
         self,
         wallet_name: str | None = None,
@@ -88,11 +90,12 @@ class Miner(BaseNeuron, HealthServerMixin):
         launch_health: bool | None = None,
         visualization_port: int | None = None,
         visualization_auto_open: bool | None = None,
+        miner_control_port: int | None = None,
     ):
         super().__init__()
         self.device = device or os.getenv("DEVICE") or miner_settings.detect_device()
         self.run_flags: RunFlags = run_flags.model_copy(deep=True) if run_flags else RUN_FLAGS.model_copy(deep=True)
-        self.mock = common_settings.MOCK if mock is None else mock
+        self.mock = mock if mock is not None else False
         self.health_host = health_host or miner_settings.MINER_HEALTH_HOST
         self.health_port = health_port or miner_settings.MINER_HEALTH_PORT
         self.health_endpoint = health_endpoint or miner_settings.MINER_HEALTH_ENDPOINT
@@ -105,7 +108,11 @@ class Miner(BaseNeuron, HealthServerMixin):
         self.state_manager: StateManager = StateManager(wallet=self.wallet)
         self.weights_submitted: bool = False
         self.partitions_submitted: bool = False
-        self.miner_api_client: MinerAPIClient = MinerAPIClient(hotkey=self.wallet.hotkey)
+        self.miner_api_client: MinerAPIClient = MinerAPIClient(
+            hotkey=self.wallet.hotkey,
+            is_mounted=miner_settings.IS_MOUNTED,
+            electron_version=miner_settings.ELECTRON_VERSION,
+        )
         self.need_to_pull_weights = True
         self.training_phase: TrainingPhase = TrainingPhase(
             miner_api_client=self.miner_api_client,
@@ -114,11 +121,19 @@ class Miner(BaseNeuron, HealthServerMixin):
             device=self.device,
             run_flags=self.run_flags,
             mock=self.mock,
+            is_mounted=miner_settings.IS_MOUNTED,
+            miner=self,
         )
-        self._latest_attestation_payloads: dict[str, MinerAttestationPayload] = {}
+        self.stats_tracker = StatsTracker()
+        self.training_phase.attach_stats_tracker(self.stats_tracker)
+        self._latest_attestation_payloads: dict[str, MinerAttestationPayload | EnclaveSignResponse] = {}
         self.visualization_process: multiprocessing.Process | None = None
 
-    async def _collect_attestation_payload(self, action: str) -> MinerAttestationPayload | None:
+        self.miner_control_port = miner_control_port or 8010
+        self.miner_control_process: multiprocessing.Process | None = None
+        self.is_mounted = miner_settings.IS_MOUNTED
+
+    async def _collect_attestation_payload(self, action: str) -> MinerAttestationPayload | EnclaveSignResponse | None:
         if self.run_flags.attest.isOff():
             return None
 
@@ -133,7 +148,18 @@ class Miner(BaseNeuron, HealthServerMixin):
                 self_checks=challenge_response.self_checks,
                 crypto=challenge_response.crypto,
             )
-            payload = await asyncio.to_thread(collect_attestation_payload, challenge)
+
+            if self.is_mounted:
+                challenge_id = json.loads(challenge_response.attestation_challenge_blob)["challenge_id"]
+                payload = await self.enclave_sign_with_purpose(
+                    purpose="attestation",
+                    payload=payload_base64_from_obj(challenge),
+                    challenge_id=challenge_id,
+                )
+                logger.debug(f"Signing attestation challenge {challenge_id} for action {action}")
+            else:
+                payload = await asyncio.to_thread(collect_attestation_payload, challenge)
+
             self._latest_attestation_payloads[action] = payload
             logger.info(f"Collected attestation payload for action {action}")
             return payload
@@ -519,9 +545,6 @@ class Miner(BaseNeuron, HealthServerMixin):
 
     async def register(self) -> tuple[dict, dict]:
         """Single registration attempt. Raises on failure for caller to retry."""
-        if common_settings.TEST_MODE:
-            await TestAPIClient.register_to_metagraph(hotkey=self.wallet.hotkey)
-
         logger.info(f"🔄 Attempting to fetch run info for miner {self.hotkey[:8]}...")
         run_info_list = await self.miner_api_client.fetch_run_info_request()
         if not run_info_list:
@@ -559,6 +582,11 @@ class Miner(BaseNeuron, HealthServerMixin):
         self.model_manager.epoch_on_registration = current_epoch
 
         self._update_run_flags(response.run_flags)
+
+        self.stats_tracker.reset()
+        self.stats_tracker.set_layer(self.state_manager.layer)
+        self.stats_tracker.set_remote_epoch(current_epoch)
+        self.stats_tracker.set_run_id(response.run_id)
 
         logger.success(
             f"✅ Miner {self.hotkey[:8]} registered successfully in layer {self.state_manager.layer} on training epoch {current_epoch}"
@@ -729,7 +757,7 @@ class Miner(BaseNeuron, HealthServerMixin):
                     "⚠️ Miner healthcheck API not configured in settings (MINER_HEALTH_PORT missing). Skipping."
                 )
 
-            # Reset the entire miner state, which also downloads the weights and optimizer state.
+                # Reset the entire miner state, which also downloads the weights and optimizer state.
             await self.run()
 
         except KeyboardInterrupt:
@@ -945,6 +973,3 @@ class Miner(BaseNeuron, HealthServerMixin):
                 del merged_partitions  # TODO: @cassova: do a better job of cleaning this up
                 del final_partitions  # TODO: @cassova: do a better job of cleaning this up
                 log_gpu_memory_usage(note="after merging partitions")
-
-
-# main copy

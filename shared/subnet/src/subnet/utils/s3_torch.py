@@ -16,25 +16,43 @@ import torch
 import numpy as np
 
 
+def _should_skip_ssl(url: str) -> bool:
+    """Return True if SSL verification should be skipped for localhost/minio URLs."""
+    return "localhost" in url or "minio" in url or "127.0.0.1" in url
+
+
 class AioHttpClientWithOpenSession:
     def __init__(self):
         self.SESSION_REFRESH_TIME = 300
         self.session = None
         self.session_created_at = time()
+        self._current_ssl_skip = None  # Track if current session has SSL skip enabled
 
     async def close(self):
         if self.session:
             await self.session.close()
+            self.session = None
+            self._current_ssl_skip = None
 
-    async def refresh_session_if_needed(self):
-        if not self.session or time() - self.session_created_at > self.SESSION_REFRESH_TIME:
+    async def _get_or_create_session(self, skip_ssl: bool):
+        """Get existing session or create new one with appropriate SSL settings."""
+        needs_refresh = (
+            not self.session
+            or time() - self.session_created_at > self.SESSION_REFRESH_TIME
+            or self._current_ssl_skip != skip_ssl
+        )
+        if needs_refresh:
             await self.close()
-            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300))
+            connector = aiohttp.TCPConnector(ssl=False) if skip_ssl else None
+            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300), connector=connector)
             self.session_created_at = time()
+            self._current_ssl_skip = skip_ssl
+        return self.session
 
     async def get(self, url: str):
-        await self.refresh_session_if_needed()
-        response = await self.session.get(url)
+        skip_ssl = _should_skip_ssl(url)
+        session = await self._get_or_create_session(skip_ssl)
+        response = await session.get(url)
         return response
 
 
@@ -131,10 +149,12 @@ async def download_weights_or_optimizer_state(
     """Download weights from S3 storage with retry logic."""
     start_time = time()
     timeout = aiohttp.ClientTimeout(total=3000)  # 5 minute timeout
+    # Skip SSL verification for localhost/minio (self-signed certs in local dev)
+    connector = aiohttp.TCPConnector(ssl=False) if _should_skip_ssl(metadata_info.tensor_path) else None
 
     for attempt in range(max_retries + 1):
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 # if partition is not specified, download the full tensor
                 byte_range = f"bytes={metadata_info.start_byte}-{metadata_info.end_byte - 1}"
                 async with session.get(metadata_info.tensor_path, headers={"Range": byte_range}) as response:

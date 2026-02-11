@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from typing import Any
+from common.utils.verify_enclave_signature import payload_base64_from_obj
 from loguru import logger
 from miner.utils.timer_logger import TimerLoggerMiner
 import torch
-
+import time
 from common.models.api_models import (
     AttestationChallengeResponse,
     CompleteFileUploadResponse,
@@ -22,11 +25,12 @@ from miner.utils.stats import StatsTracker, tensor_num_bytes
 
 
 class ActivationPublisher:
-    def __init__(self, miner_api_client: MinerAPIClient, run_flags: RunFlags | None = None):
+    def __init__(self, miner_api_client: MinerAPIClient, run_flags: RunFlags | None = None, miner: Any | None = None):
         self._miner_api_client = miner_api_client
         self._publishing_tasks: list[asyncio.Task] = []
         self._stats_tracker: StatsTracker | None = None
         self._run_flags: RunFlags = run_flags or RUN_FLAGS
+        self.miner = miner
 
     def attach_stats_tracker(self, tracker: StatsTracker | None) -> None:
         """Attach a stats tracker for dashboard metrics."""
@@ -84,6 +88,7 @@ class ActivationPublisher:
                 },
                 hotkey=self._miner_api_client.hotkey.ss58_address[:8],
             ):
+                start_time = time.time()
                 upload_response: CompleteFileUploadResponse = await upload_tensor(
                     miner_api_client=self._miner_api_client,
                     tensor=tensor,
@@ -105,13 +110,22 @@ class ActivationPublisher:
                             self_checks=attestation_self_checks,
                             crypto=attestation_crypto,
                         )
-                        attestation_payload = await asyncio.to_thread(
-                            collect_attestation_payload,
-                            challenge,
-                        )
-                        logger.info(
-                            f"Collected attestation payload for activation {activation_id}",
-                        )
+                        challenge_id = json.loads(attestation_challenge_blob)["challenge_id"]
+
+                        if self.miner and self.miner.is_mounted:
+                            attestation_payload = await self.miner.enclave_sign_with_purpose(
+                                purpose="attestation",
+                                payload=payload_base64_from_obj(challenge),
+                                challenge_id=challenge_id,
+                            )
+                        else:
+                            attestation_payload = await asyncio.to_thread(
+                                collect_attestation_payload,
+                                challenge,
+                            )
+                            logger.info(
+                                f"Collected attestation payload for activation {activation_id}",
+                            )
                     except AttestationUnavailableError as exc:
                         error_code = getattr(exc, "error_code", None)
                         code_suffix = f" (error_code={error_code})" if error_code is not None else ""
@@ -122,22 +136,38 @@ class ActivationPublisher:
                         logger.exception(
                             f"Error collecting attestation for activation {activation_id}: {exc}",
                         )
+                end_time = time.time()
+                if self._stats_tracker is not None:
+                    stats = self._stats_tracker.ensure_activation_stats(activation_id, direction=direction)
+                    stats.timing.upload.start = start_time
+                    stats.timing.upload.end = end_time
+                    stats.timing.upload.duration = end_time - start_time
 
             async with TimerLoggerMiner(
                 name="submit_activation",
                 metadata={"activation_id": activation_id, "direction": direction},
                 hotkey=self._miner_api_client.hotkey.ss58_address[:8],
             ):
+                start_time
+                activation_stats = None
+                if self._stats_tracker is not None:
+                    activation_stats = self._stats_tracker.get_activation_stats_payload(activation_id)
                 await self._miner_api_client.submit_activation_request(
                     submit_activation_request=SubmitActivationRequest(
                         activation_id=activation_id,
                         activation_path=upload_response.object_path,
                         direction=direction,
+                        activation_stats=activation_stats,
                         attestation=attestation_payload,
                     ),
                 )
                 logger.success(f"✅ Successfully published activation {activation_id} direction {direction}")
-
+                end_time = time.time()
+                if self._stats_tracker is not None:
+                    stats = self._stats_tracker.ensure_activation_stats(activation_id, direction=direction)
+                    stats.timing.publish.start = start_time
+                    stats.timing.publish.end = end_time
+                    stats.timing.publish.duration = end_time - start_time
         except (LayerStateException, MinerNotRegisteredException) as e:
             # Swallow expected exceptions
             logger.warning(f"Anticipated exception has occurred while publishing activations (swallowed): {e}")

@@ -10,7 +10,6 @@ import bittensor as bt
 from common import settings as common_settings
 from common.models.api_models import ValidatorTask
 from subnet.base.base_neuron import BaseNeuron
-from subnet.test_client import TestAPIClient
 from subnet.utils.bt_utils import get_subtensor
 from subnet.validator_api_client import ValidatorAPIClient
 from validator import settings as validator_settings
@@ -146,11 +145,6 @@ class Validator(BaseNeuron, HealthServerMixin):
         """
 
         logger.info("🚀 Starting validator with robust task management")
-
-        # Initial setup - this only happens once
-        if common_settings.TEST_MODE:
-            logger.info(f"🔄 Registering validator {self.hotkey[:8]} to metagraph")
-            await TestAPIClient.register_to_metagraph(hotkey=self.wallet.hotkey, role="validator")
 
         # Start the healthcheck server
         if validator_settings.LAUNCH_HEALTH:

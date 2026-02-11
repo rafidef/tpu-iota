@@ -10,9 +10,6 @@ import sys
 
 from loguru import logger
 
-from common import settings as common_settings
-from subnet.test_client import TestAPIClient
-
 # Add the validator package to the path
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -24,8 +21,6 @@ async def run_single_validator(wallet_name: str, wallet_hotkey: str, validator_i
     try:
         logger.info(f"Starting validator {validator_id} with wallet_name={wallet_name}, wallet_hotkey={wallet_hotkey}")
         validator = Validator(wallet_name=wallet_name, wallet_hotkey=wallet_hotkey)
-        if common_settings.MOCK:
-            await TestAPIClient.register_to_metagraph(hotkey=wallet_hotkey, role="validator")
         await validator.run_validator()
     except Exception as e:
         logger.error(f"Error in validator {validator_id}: {e}")

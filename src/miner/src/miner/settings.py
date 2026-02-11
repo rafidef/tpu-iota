@@ -72,3 +72,7 @@ LOCAL_BATCH_SIZE = int(
     os.getenv("LOCAL_BATCH_SIZE", "8")
 )  # Splits the minibatch further into even smaller local batches to avoid running out of memory
 PSEUDO_GRADIENTS_BATCH_SIZE = int(os.getenv("PSEUDO_GRADIENTS_BATCH_SIZE", "100"))
+
+# Determines whether the miner is mounted within a host electron app
+IS_MOUNTED = os.getenv("IS_MOUNTED") == "true"
+ELECTRON_VERSION = os.getenv("ELECTRON_VERSION")

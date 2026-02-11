@@ -17,17 +17,14 @@ def _log_retry_attempt(retry_state):
 
 def create_subtensor_client() -> bt.subtensor:
     """Build a subtensor client honoring custom endpoints if provided."""
-    config = Subtensor.config()
-    config.subtensor.network = common_settings.NETWORK
-
+    # When SUBTENSOR_ENDPOINT is set, pass it directly as the network parameter
+    # This is required because bt.subtensor(network="local") hardcodes 127.0.0.1:9944
+    # and ignores the config's chain_endpoint
     if common_settings.SUBTENSOR_ENDPOINT:
-        config.subtensor.chain_endpoint = common_settings.SUBTENSOR_ENDPOINT
-        logger.info(f"🔄 Using custom subtensor endpoint: {config.subtensor.chain_endpoint}")
+        logger.info(f"🔄 Using custom subtensor endpoint: {common_settings.SUBTENSOR_ENDPOINT}")
+        return Subtensor(network=common_settings.SUBTENSOR_ENDPOINT)
 
-    return bt.subtensor(
-        network=common_settings.NETWORK,
-        config=config,
-    )
+    return bt.subtensor(network=common_settings.NETWORK)
 
 
 # retry but if it fails, it will raise an error
@@ -38,21 +35,7 @@ def create_subtensor_client() -> bt.subtensor:
 )
 def get_subtensor() -> bt.subtensor:
     logger.info(f"🔄 Getting subtensor for network: {common_settings.NETWORK}")
-    if common_settings.MOCK:
-        logger.info("🔄 Using mock subtensor")
-        from bittensor.utils.mock.subtensor_mock import Subtensor
-
-        try:
-            subtensor = Subtensor("test")
-            logger.info("Using Mock subtensor with network test")
-            return subtensor
-        except Exception as e:
-            logger.error(f"Error loading subtensor(test) while in Mock mode: {e}")
-            subtensor = Subtensor()
-            logger.info("Using Mock subtensor with network Finney")
-            return subtensor
-
-    elif common_settings.BITTENSOR:
+    if common_settings.BITTENSOR:
         logger.info("🔄 Using subtensor")
         return create_subtensor_client()
     else:
