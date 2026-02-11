@@ -37,27 +37,37 @@ COMMON_HIST_DURATION_BUKCET = (
 )
 
 
-def GaugeWithParams(metric_name: str, description: str, registry: Optional[CollectorRegistry] = None) -> Gauge:
+def GaugeWithParams(
+    metric_name: str,
+    description: str,
+    registry: Optional[CollectorRegistry] = None,
+    labelnames: Optional[list[str]] = None,
+) -> Gauge:
     if registry is None:
         registry = REGISTRY
-
+    names = labelnames if labelnames is not None else label_names
     g = Gauge(
         metric_name,
         description,
-        labelnames=label_names,
+        labelnames=names,
         registry=registry,
     )
     return g
 
 
-def CounterWithParams(metric_name: str, description: str, registry: Optional[CollectorRegistry] = None) -> Counter:
+def CounterWithParams(
+    metric_name: str,
+    description: str,
+    registry: Optional[CollectorRegistry] = None,
+    labelnames: Optional[list[str]] = None,
+) -> Counter:
     if registry is None:
         registry = REGISTRY
-
+    names = labelnames if labelnames is not None else label_names
     c = Counter(
         metric_name,
         description,
-        labelnames=label_names,
+        labelnames=names,
         registry=registry,
     )
     return c

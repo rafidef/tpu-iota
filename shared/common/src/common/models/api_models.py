@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal, Optional
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
@@ -57,12 +57,12 @@ class SyncActivationAssignmentsRequest(BaseModel):
 class WeightUpdate(BaseModel):
     weights_path: str
     weights_metadata_path: str
-    attestation: "MinerAttestationPayload | None" = None
+    attestation: "MinerAttestationPayload | EnclaveSignResponse | None" = None
 
 
 class SubmitMergedPartitionsRequest(BaseModel):
     partitions: list[MinerPartition]
-    attestation: "MinerAttestationPayload | None" = None
+    attestation: "MinerAttestationPayload | EnclaveSignResponse | None" = None
 
 
 class MinerRegistrationResponse(BaseModel):
@@ -172,8 +172,8 @@ class MinerScore(BaseModel):
     # Calculated by: total_score / all total_scores for the run
     run_weight: float | None = None
 
-    # Overall weight for this hotkey (these total to 1.0 across all miners)
-    # Calculated by: weight_in_run * (1 - run's burn rate) * run's incentive_perc
+    # Overall weight for this hotkey (these total to 1.0 across all miners incl. burn)
+    # Calculated by: run_weight * (1 - run's burn rate) * run's incentive_perc
     weight: float | None = None
 
 
@@ -183,11 +183,8 @@ class RunIncentiveAllocation(BaseModel):
     run_id: str
 
     # Weight of the run that determines percentage of incentive allocated for this run
+    # These must sum to less than or equal to 1.0
     incentive_weight: float
-
-    # Percentage of incentive allocated for this run
-    # Calculated by: incentive_weight / total_incentive_weight
-    incentive_normalized: float | None = None
 
     # How much of the allocated incentive is burned for this run
     burn_factor: float
@@ -241,14 +238,16 @@ class SubmitActivationRequest(BaseModel):
     direction: Literal["forward", "backward"]
     activation_id: str | None = None
     activation_path: str | None = None
-    attestation: MinerAttestationPayload | None = None
+    activation_stats: dict[str, Any] | None = None
+    attestation: MinerAttestationPayload | EnclaveSignResponse | None = None
 
 
 class RegisterMinerRequest(BaseModel):
     run_id: str
-    attestation: MinerAttestationPayload | None = None
+    attestation: MinerAttestationPayload | EnclaveSignResponse | None = None
     coldkey: str | None = None
     register_as_metagraph_miner: bool = True
+    enclave_payload: EnclaveGetKeyIdResponse | None = None
 
 
 class PayoutColdkeyRequest(BaseModel):
@@ -266,3 +265,35 @@ class RunInfo(BaseModel):
     authorized: bool
     run_flags: RunFlags
     max_miners: int
+
+
+# --- KeySigner-aligned enclave payloads ---
+
+KeySignerAlg = Literal["ES256"]
+
+
+class EnclaveGetKeyIdRequest(BaseModel):
+    purpose: str
+    preferredAlgorithms: list[str] = Field(default_factory=list)
+    dpKeychain: Optional[bool] = None
+
+
+class EnclaveGetKeyIdResponse(BaseModel):
+    key_id: str
+    public_key_base64: str
+    alg: KeySignerAlg
+
+
+class EnclaveSignRequest(BaseModel):
+    keyId: str
+    payloadBase64: str
+    alg: KeySignerAlg = "ES256"
+    dpKeychain: Optional[bool] = None
+
+
+class EnclaveSignResponse(BaseModel):
+    key_id: str
+    signature_der_base64: str
+    alg: KeySignerAlg
+    challenge_id: Optional[str] = None
+    public_key_base64: Optional[str] = None

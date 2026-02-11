@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from common.models.run_flags import RunFlags
+from typing import Any
 from miner.utils.timer_logger import TimerLoggerMiner
 import torch
 from loguru import logger
@@ -32,6 +33,8 @@ class TrainingPhase:
         device: str,
         run_flags: RunFlags,
         mock: bool,
+        is_mounted: bool = False,
+        miner: Any | None = None,
     ):
         self._miner_api_client = miner_api_client
         self._state_manager = state_manager
@@ -48,11 +51,14 @@ class TrainingPhase:
             mock=self._mock,
             run_flags=self._run_flags,
         )
-        self._publisher = ActivationPublisher(miner_api_client=self._miner_api_client, run_flags=self._run_flags)
+        self._publisher = ActivationPublisher(
+            miner_api_client=self._miner_api_client, run_flags=self._run_flags, miner=miner
+        )
         self._stats_tracker: StatsTracker | None = None
         self.backwards_since_reset = 0
         self.backwards_since_last_optim = 0
         self.local_optimization_steps = 0
+        self.is_mounted = is_mounted
 
     def attach_stats_tracker(self, tracker: StatsTracker | None) -> None:
         """Attach a stats tracker and propagate to child components."""
@@ -84,6 +90,14 @@ class TrainingPhase:
                 activation = await self._queue.get_activation()
                 if activation is None:
                     continue
+                if self._stats_tracker is not None:
+                    stats = self._stats_tracker.ensure_activation_stats(
+                        activation.activation_id,
+                        direction=activation.direction,
+                    )
+                    stats.timing.queue.end = time.time()
+                    if stats.timing.queue.start is not None:
+                        stats.timing.queue.duration = stats.timing.queue.end - stats.timing.queue.start
 
                 with logger.contextualize(
                     activation_id=activation.activation_id,
@@ -132,6 +146,7 @@ class TrainingPhase:
             ):
                 if self._stats_tracker is not None:
                     self._stats_tracker.record_forward()
+                start_time = time.time()
                 logger.info(
                     f"🚀 Starting FORWARD pass for layer {self._state_manager.layer} | Processing activation {activation_data.activation_id} | Miner: {self._hotkey[:8]}"
                 )
@@ -173,6 +188,18 @@ class TrainingPhase:
                 logger.info(
                     f"output activations before upload with shape {output_activations_cpu.shape} for {self._hotkey[:8]} on layer {self._state_manager.layer}"
                 )
+                end_time = time.time()
+                if self._stats_tracker is not None:
+                    stats = self._stats_tracker.ensure_activation_stats(
+                        activation_data.activation_id,
+                        direction=activation_data.direction,
+                    )
+                    stats.timing.forward.start = start_time
+                    stats.timing.forward.end = end_time
+                    stats.timing.forward.duration = end_time - start_time
+                    stats.timing.forward.cache_len = len(self._cache)
+                    stats.timing.forward.forward_queue_len = len(self._queue._forward_queue)
+                    stats.timing.forward.backward_queue_len = len(self._queue._backward_queue)
 
                 self._publisher.publish_activation(
                     tensor=output_activations_cpu,
@@ -202,6 +229,7 @@ class TrainingPhase:
             ):
                 if self._stats_tracker is not None:
                     self._stats_tracker.record_backward()
+                start_time = time.time()
                 last_layer = self._state_manager.layer == self._model_manager.model_metadata["n_splits"] - 1
                 all_input_activations_grads = []
                 losses = []
@@ -316,7 +344,18 @@ class TrainingPhase:
 
                     log_gpu_memory_usage(note="after moving input activation grads to GPU")
                     all_input_activations_grads.append(input_activation_grads)
-
+                end_time = time.time()
+                if self._stats_tracker is not None:
+                    stats = self._stats_tracker.ensure_activation_stats(
+                        activation_data.activation_id,
+                        direction=activation_data.direction,
+                    )
+                    stats.timing.backward.start = start_time
+                    stats.timing.backward.end = end_time
+                    stats.timing.backward.duration = end_time - start_time
+                    stats.timing.backward.cache_len = len(self._cache)
+                    stats.timing.backward.forward_queue_len = len(self._queue._forward_queue)
+                    stats.timing.backward.backward_queue_len = len(self._queue._backward_queue)
                 async with TimerLoggerMiner(name="publishing_backwards", hotkey=self._hotkey[:8]):
                     logger.debug(f"Backwards since reset for miner {self._hotkey[:8]}: {self.backwards_since_reset}")
 

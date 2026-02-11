@@ -24,13 +24,20 @@ async def weight_setting_step(wallet: Wallet, subtensor: Subtensor, metagraph: b
     logger.debug(f"GRADIENT VALIDATOR: GLOBAL MINER SCORES: {global_weights}")
 
     # Safer type conversion
+    # TODO for Nick: Brian would like this simplified to what it was before (as a dictionary comprehension)
+    # the reason being, that the logic should be on orchestartor side - not validator.  However,
+    # doing this, would require a refactor the MinerScore data type which expects a single run_id
+    # for each miner score record.
+    global_weights_dict: dict[int, float] = {}
     try:
-        global_weights = {int(m.uid): m.weight for m in global_weights.miner_scores}
+        for m in global_weights.miner_scores:
+            k = int(m.uid)
+            global_weights_dict[k] = global_weights_dict.get(k, 0.0) + (m.weight or 0.0)
     except Exception:
         logger.error("Error converting global weights to dictionary")
         raise
 
-    await set_weights(wallet=wallet, subtensor=subtensor, weights=global_weights, metagraph=metagraph)
+    await set_weights(wallet=wallet, subtensor=subtensor, weights=global_weights_dict, metagraph=metagraph)
 
 
 async def set_weights(wallet: Wallet, subtensor: Subtensor, weights: dict[int, float], metagraph: bt.metagraph):

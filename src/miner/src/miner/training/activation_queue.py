@@ -228,6 +228,19 @@ class ActivationQueue:
             # Filter the response
             response = await self._filter_duplicates(response=response)  # do this before we split
             backward_response, forward_response = await self._split_responses(response=response)
+            if self._stats_tracker is not None:
+                for forward in forward_response:
+                    self._stats_tracker.ensure_activation_stats(
+                        forward.activation_id,
+                        direction="forward",
+                        time_received=time.time(),
+                    )
+                for backward in backward_response:
+                    self._stats_tracker.ensure_activation_stats(
+                        backward.activation_id,
+                        direction="backward",
+                        time_received=time.time(),
+                    )
             logger.debug(
                 f"Forward response prior to excess filtering: {[(a.activation_id, a.direction) for a in forward_response]}"
             )
@@ -290,6 +303,12 @@ class ActivationQueue:
                     f"Downloaded activation {activation_response.activation_id} going {activation_response.direction}"
                 )
                 async with self._queue_lock:
+                    if self._stats_tracker is not None:
+                        stats = self._stats_tracker.ensure_activation_stats(
+                            activation_response.activation_id,
+                            direction=activation_response.direction,
+                        )
+                        stats.timing.queue.start = time.time()
                     if activation_response.direction == "backward":
                         self._backward_queue.append(entry)
                     else:
@@ -306,6 +325,7 @@ class ActivationQueue:
                 hotkey=self._miner_api_client.hotkey.ss58_address[:8],
             ):
                 try:
+                    start_time = time.time()
                     # Download the input activations
                     if activation_response.direction == "forward" and self._state_manager.layer == 0:
                         input_activations = await asyncio.wait_for(
@@ -360,6 +380,15 @@ class ActivationQueue:
                     total_bytes = tensor_num_bytes(input_activations) + tensor_num_bytes(sample_activations)
                     if self._stats_tracker is not None:
                         self._stats_tracker.record_download(total_bytes)
+                    end_time = time.time()
+                    if self._stats_tracker is not None:
+                        stats = self._stats_tracker.ensure_activation_stats(
+                            activation_response.activation_id,
+                            direction=activation_response.direction,
+                        )
+                        stats.timing.download.start = start_time
+                        stats.timing.download.end = end_time
+                        stats.timing.download.duration = end_time - start_time
                     return DownloadedData(
                         activation_response=activation_response,
                         input_activations=input_activations,

@@ -11,7 +11,7 @@ async def download_sample(
     download_url: str,
     tokenizer,
     device: str = "cpu",
-    mock: bool = common_settings.MOCK,
+    mock: bool = False,
     run_flags: RunFlags = RUN_FLAGS,
 ) -> torch.Tensor:
     """

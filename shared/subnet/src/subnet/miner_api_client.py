@@ -37,13 +37,19 @@ from substrateinterface.keypair import Keypair
 
 
 class MinerAPIClient(CommonAPIClient):
-    def __init__(self, hotkey: Keypair | None = None):
+    def __init__(self, hotkey: Keypair | None = None, is_mounted: bool = False, electron_version: str | None = None):
         self.hotkey = hotkey
         self.layer_state = LayerPhase.TRAINING
+        self.is_mounted = is_mounted
+        self.electron_version = electron_version
 
     async def fetch_run_info_request(self) -> list[RunInfo]:
         response = await CommonAPIClient.orchestrator_request(
-            method="GET", path="/common/get_run_info", hotkey=self.hotkey
+            method="GET",
+            path="/common/get_run_info",
+            hotkey=self.hotkey,
+            is_mounted=self.is_mounted,
+            electron_version=self.electron_version,
         )
         parsed_response = self.parse_response(response)
         return [RunInfo.model_validate(run_info) for run_info in parsed_response]
@@ -53,7 +59,12 @@ class MinerAPIClient(CommonAPIClient):
     ) -> MinerRegistrationResponse | dict:
         try:
             response = await CommonAPIClient.orchestrator_request(
-                method="POST", path="/miner/register", hotkey=self.hotkey, body=register_miner_request.model_dump()
+                method="POST",
+                path="/miner/register",
+                hotkey=self.hotkey,
+                body=register_miner_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return MinerRegistrationResponse.model_validate(parsed_response)
@@ -64,7 +75,12 @@ class MinerAPIClient(CommonAPIClient):
     async def change_payout_coldkey_request(self, payout_coldkey: str) -> dict:
         try:
             response = await CommonAPIClient.orchestrator_request(
-                method="POST", path="/miner/payout_coldkey", hotkey=self.hotkey, body={"payout_coldkey": payout_coldkey}
+                method="POST",
+                path="/miner/payout_coldkey",
+                hotkey=self.hotkey,
+                body={"payout_coldkey": payout_coldkey},
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return parsed_response
@@ -75,7 +91,11 @@ class MinerAPIClient(CommonAPIClient):
     async def get_layer_state_request(self) -> LayerPhase | dict:
         try:
             response = await CommonAPIClient.orchestrator_request(
-                method="GET", path="/miner/layer_state", hotkey=self.hotkey
+                method="GET",
+                path="/miner/layer_state",
+                hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return LayerPhase(parsed_response)
@@ -90,6 +110,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/get_activations",
                 hotkey=self.hotkey,
                 body=get_activation_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return [ActivationResponse.model_validate(parsed_response) for parsed_response in parsed_response]
@@ -108,6 +130,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/submit_weights",
                 hotkey=self.hotkey,
                 body=weight_update.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
         except Exception as e:
@@ -122,6 +146,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/report_loss",
                 hotkey=self.hotkey,
                 body=loss_report.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             self.parse_response(response)
         except Exception as e:
@@ -135,6 +161,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/submit_activation",
                 hotkey=self.hotkey,
                 body=submit_activation_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             self.parse_response(response)
         except Exception as e:
@@ -148,6 +176,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/sync_activation_assignments",
                 hotkey=self.hotkey,
                 body=SyncActivationAssignmentsRequest(activation_ids=activation_ids).model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
         except Exception as e:
@@ -161,6 +191,8 @@ class MinerAPIClient(CommonAPIClient):
                 method="GET",
                 path="/miner/get_partitions",
                 hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
 
@@ -175,6 +207,8 @@ class MinerAPIClient(CommonAPIClient):
                 method="GET",
                 path="/miner/get_weight_path_per_layer",
                 hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             paths = [SubmittedWeightsAndOptimizerPresigned.model_validate(weight) for weight in parsed_response]
@@ -191,6 +225,8 @@ class MinerAPIClient(CommonAPIClient):
                 method="GET",
                 path="/miner/notify_orchestrator_of_state_call",
                 hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
         except Exception as e:
@@ -201,7 +237,11 @@ class MinerAPIClient(CommonAPIClient):
         """Get the current learning rate."""
         try:
             response: float = await CommonAPIClient.orchestrator_request(
-                method="GET", path="/miner/learning_rate", hotkey=self.hotkey
+                method="GET",
+                path="/miner/learning_rate",
+                hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
         except Exception as e:
@@ -224,6 +264,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/submit_merged_partitions",
                 hotkey=self.hotkey,
                 body=body,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
         except Exception as e:
@@ -240,6 +282,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/request_attestation_challenge",
                 hotkey=self.hotkey,
                 body=AttestationChallengeRequest(action=action).model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed = self.parse_response(response)
             return RequestAttestationChallengeResponse.model_validate(parsed)
@@ -261,6 +305,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/initiate_file_upload",
                 hotkey=hotkey,
                 body=file_upload_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return (
@@ -298,6 +344,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/complete_multipart_upload",
                 hotkey=hotkey,
                 body=file_upload_completion_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return CompleteFileUploadResponse.model_validate(parsed_response)
@@ -308,7 +356,11 @@ class MinerAPIClient(CommonAPIClient):
     async def get_merged_partitions(self, hotkey: Keypair) -> list[MinerPartition] | dict:
         try:
             response = await CommonAPIClient.orchestrator_request(
-                method="GET", path="/common/get_merged_partitions", hotkey=hotkey
+                method="GET",
+                path="/common/get_merged_partitions",
+                hotkey=hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return [MinerPartition.model_validate(partition) for partition in parsed_response]
@@ -351,6 +403,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/get_previous_partitions",
                 hotkey=self.hotkey,
                 body=partition_indices,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             response = self.parse_response(response)
             if response is None:
