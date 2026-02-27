@@ -477,7 +477,8 @@ class Miner(BaseNeuron, HealthServerMixin, NodeControlMixin):
         logger.info(f"✅ Best run for miner {self.hotkey[:8]} is {best_run.run_id}")
 
         logger.info(f"🔄 Attempting to register miner {self.hotkey[:8]} on run {best_run.run_id} with orchestrator...")
-        register_request = RegisterMinerRequest(run_id=best_run.run_id, register_as_metagraph_miner=True)
+        register_as_metagraph = not best_run.is_miner_pool
+        register_request = RegisterMinerRequest(run_id=best_run.run_id, register_as_metagraph_miner=register_as_metagraph)
         response: MinerRegistrationResponse = await self.miner_api_client.register_miner_request(
             register_miner_request=register_request
         )
