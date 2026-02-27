@@ -8,6 +8,9 @@ def identify_best_run(run_info_list: list[RunInfo], is_miner_pool: bool = False)
     # 2. highest incentive_perc reduced by the burn_factor and proportioned by the number of miners + 1 (you)
 
     applicable_runs = [r for r in run_info_list if r.authorized and r.is_miner_pool == is_miner_pool]
+    # Fallback: if no runs match the is_miner_pool filter, try all authorized runs
+    if len(applicable_runs) == 0:
+        applicable_runs = [r for r in run_info_list if r.authorized]
     if len(applicable_runs) == 0:
         raise Exception("Fatal Error: No applicable runs found")
 
