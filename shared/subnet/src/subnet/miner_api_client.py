@@ -1,6 +1,7 @@
 from typing import Any, Literal
 from common.models.api_models import (
     GetActivationRequest,
+    LayerOptimizerStateResponse,
     RunInfo,
     ActivationResponse,
     CompleteFileUploadResponse,
@@ -8,22 +9,33 @@ from common.models.api_models import (
     FileUploadRequest,
     LossReportRequest,
     MinerRegistrationResponse,
+    OptimizerStateUpdate,
     RegisterMinerRequest,
     FileUploadResponse,
     SubmitActivationRequest,
     SubmittedWeightsAndOptimizerPresigned,
     SyncActivationAssignmentsRequest,
+    WeightSubmitResponse,
     WeightUpdate,
     AttestationChallengeRequest,
     RequestAttestationChallengeResponse,
     SubmitMergedPartitionsRequest,
     MinerAttestationPayload,
 )
-from common.models.error_models import LayerStateError, EntityNotRegisteredError, RunFullError, SpecVersionError
+from common.models.error_models import (
+    LayerStateError,
+    EntityNotRegisteredError,
+    MinerFrozenError,
+    MinerInitializingError,
+    RunFullError,
+    SpecVersionError,
+)
 
 from common.utils.exceptions import (
     APIException,
     LayerStateException,
+    MinerFrozenException,
+    MinerInitializingException,
     MinerNotRegisteredException,
     RunFullException,
     SpecVersionException,
@@ -37,13 +49,19 @@ from substrateinterface.keypair import Keypair
 
 
 class MinerAPIClient(CommonAPIClient):
-    def __init__(self, hotkey: Keypair | None = None):
+    def __init__(self, hotkey: Keypair | None = None, is_mounted: bool = False, electron_version: str | None = None):
         self.hotkey = hotkey
         self.layer_state = LayerPhase.TRAINING
+        self.is_mounted = is_mounted
+        self.electron_version = electron_version
 
     async def fetch_run_info_request(self) -> list[RunInfo]:
         response = await CommonAPIClient.orchestrator_request(
-            method="GET", path="/common/get_run_info", hotkey=self.hotkey
+            method="GET",
+            path="/common/get_run_info",
+            hotkey=self.hotkey,
+            is_mounted=self.is_mounted,
+            electron_version=self.electron_version,
         )
         parsed_response = self.parse_response(response)
         return [RunInfo.model_validate(run_info) for run_info in parsed_response]
@@ -53,7 +71,12 @@ class MinerAPIClient(CommonAPIClient):
     ) -> MinerRegistrationResponse | dict:
         try:
             response = await CommonAPIClient.orchestrator_request(
-                method="POST", path="/miner/register", hotkey=self.hotkey, body=register_miner_request.model_dump()
+                method="POST",
+                path="/miner/register",
+                hotkey=self.hotkey,
+                body=register_miner_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return MinerRegistrationResponse.model_validate(parsed_response)
@@ -64,7 +87,12 @@ class MinerAPIClient(CommonAPIClient):
     async def change_payout_coldkey_request(self, payout_coldkey: str) -> dict:
         try:
             response = await CommonAPIClient.orchestrator_request(
-                method="POST", path="/miner/payout_coldkey", hotkey=self.hotkey, body={"payout_coldkey": payout_coldkey}
+                method="POST",
+                path="/miner/payout_coldkey",
+                hotkey=self.hotkey,
+                body={"payout_coldkey": payout_coldkey},
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return parsed_response
@@ -75,7 +103,11 @@ class MinerAPIClient(CommonAPIClient):
     async def get_layer_state_request(self) -> LayerPhase | dict:
         try:
             response = await CommonAPIClient.orchestrator_request(
-                method="GET", path="/miner/layer_state", hotkey=self.hotkey
+                method="GET",
+                path="/miner/layer_state",
+                hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return LayerPhase(parsed_response)
@@ -90,6 +122,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/get_activations",
                 hotkey=self.hotkey,
                 body=get_activation_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return [ActivationResponse.model_validate(parsed_response) for parsed_response in parsed_response]
@@ -100,18 +134,66 @@ class MinerAPIClient(CommonAPIClient):
     async def submit_weights(
         self,
         weight_update: WeightUpdate,
-    ) -> dict:
-        """Attempts to submit weights to the orchestrator"""
+    ) -> WeightSubmitResponse:
+        """Attempts to submit weights to the orchestrator.
+
+        Returns:
+            WeightSubmitResponse: Contains message and should_upload_optimizer_state flag.
+                If should_upload_optimizer_state is True, the miner should upload their
+                optimizer state and call submit_optimizer_state.
+        """
         try:
             response = await CommonAPIClient.orchestrator_request(
                 method="POST",
                 path="/miner/submit_weights",
                 hotkey=self.hotkey,
                 body=weight_update.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
+            )
+            parsed_response = self.parse_response(response)
+            return WeightSubmitResponse.model_validate(parsed_response)
+        except Exception as e:
+            logger.error(f"Error submitting weights: {e}")
+            raise
+
+    async def submit_optimizer_state(
+        self,
+        optimizer_state_path: str,
+    ) -> dict:
+        """Submit optimizer state path to the orchestrator.
+
+        This should only be called when submit_weights returns
+        should_upload_optimizer_state=True.
+        """
+        try:
+            response = await CommonAPIClient.orchestrator_request(
+                method="POST",
+                path="/miner/submit_optimizer_state",
+                hotkey=self.hotkey,
+                body=OptimizerStateUpdate(optimizer_state_path=optimizer_state_path).model_dump(),
             )
             return self.parse_response(response)
         except Exception as e:
-            logger.error(f"Error submitting weights: {e}")
+            logger.error(f"Error submitting optimizer state: {e}")
+            raise
+
+    async def get_layer_optimizer_state(self) -> LayerOptimizerStateResponse:
+        """Get the layer optimizer state presigned URL for the miner's current layer.
+
+        This is used by new miners joining a layer to download the optimizer state
+        from one of the first miners who submitted weights.
+        """
+        try:
+            response = await CommonAPIClient.orchestrator_request(
+                method="GET",
+                path="/miner/get_layer_optimizer_state",
+                hotkey=self.hotkey,
+            )
+            parsed = self.parse_response(response)
+            return LayerOptimizerStateResponse.model_validate(parsed)
+        except Exception as e:
+            logger.error(f"Error getting layer-based optimizer state: {e}")
             raise
 
     async def report_loss(self, loss_report: LossReportRequest) -> None:
@@ -122,6 +204,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/report_loss",
                 hotkey=self.hotkey,
                 body=loss_report.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             self.parse_response(response)
         except Exception as e:
@@ -135,6 +219,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/submit_activation",
                 hotkey=self.hotkey,
                 body=submit_activation_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             self.parse_response(response)
         except Exception as e:
@@ -148,6 +234,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/sync_activation_assignments",
                 hotkey=self.hotkey,
                 body=SyncActivationAssignmentsRequest(activation_ids=activation_ids).model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
         except Exception as e:
@@ -161,6 +249,8 @@ class MinerAPIClient(CommonAPIClient):
                 method="GET",
                 path="/miner/get_partitions",
                 hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
 
@@ -175,6 +265,8 @@ class MinerAPIClient(CommonAPIClient):
                 method="GET",
                 path="/miner/get_weight_path_per_layer",
                 hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             paths = [SubmittedWeightsAndOptimizerPresigned.model_validate(weight) for weight in parsed_response]
@@ -191,6 +283,8 @@ class MinerAPIClient(CommonAPIClient):
                 method="GET",
                 path="/miner/notify_orchestrator_of_state_call",
                 hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
         except Exception as e:
@@ -201,7 +295,11 @@ class MinerAPIClient(CommonAPIClient):
         """Get the current learning rate."""
         try:
             response: float = await CommonAPIClient.orchestrator_request(
-                method="GET", path="/miner/learning_rate", hotkey=self.hotkey
+                method="GET",
+                path="/miner/learning_rate",
+                hotkey=self.hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
         except Exception as e:
@@ -224,6 +322,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/submit_merged_partitions",
                 hotkey=self.hotkey,
                 body=body,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             return self.parse_response(response)
         except Exception as e:
@@ -240,6 +340,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/request_attestation_challenge",
                 hotkey=self.hotkey,
                 body=AttestationChallengeRequest(action=action).model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed = self.parse_response(response)
             return RequestAttestationChallengeResponse.model_validate(parsed)
@@ -261,6 +363,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/initiate_file_upload",
                 hotkey=hotkey,
                 body=file_upload_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return (
@@ -298,6 +402,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/complete_multipart_upload",
                 hotkey=hotkey,
                 body=file_upload_completion_request.model_dump(),
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return CompleteFileUploadResponse.model_validate(parsed_response)
@@ -308,7 +414,11 @@ class MinerAPIClient(CommonAPIClient):
     async def get_merged_partitions(self, hotkey: Keypair) -> list[MinerPartition] | dict:
         try:
             response = await CommonAPIClient.orchestrator_request(
-                method="GET", path="/common/get_merged_partitions", hotkey=hotkey
+                method="GET",
+                path="/common/get_merged_partitions",
+                hotkey=hotkey,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             parsed_response = self.parse_response(response)
             return [MinerPartition.model_validate(partition) for partition in parsed_response]
@@ -317,12 +427,19 @@ class MinerAPIClient(CommonAPIClient):
             raise
 
     def parse_response(self, response: Any) -> Any:
+        """Parse the response from the orchestrator.
+        If the response is a dictionary, check for error_name and handle the error accordingly.
+        If the response is not a dictionary, return the response.
+        """
+
         if not isinstance(response, dict):
             return response
+
         if (error_name := response.get("error_name")) is not None:
             if error_name == RunFullError.__name__:
                 logger.error(f"Run is full: {response['error_dict']}")
                 raise RunFullException(response["error_dict"]["message"])
+
             if error_name == LayerStateError.__name__:
                 logger.warning(f"Layer state change: {response['error_dict']}")
                 error_dict = LayerStateError(**response["error_dict"])
@@ -330,17 +447,29 @@ class MinerAPIClient(CommonAPIClient):
                 raise LayerStateException(
                     f"Miner is moving state from {error_dict.expected_status} to {error_dict.actual_status}"
                 )
+
             if error_name == EntityNotRegisteredError.__name__:
                 logger.error(f"Miner not registered error: {response['error_dict']}")
                 raise MinerNotRegisteredException("Miner not registered")
+
             if error_name == SpecVersionError.__name__:
                 logger.error(f"Spec version mismatch: {response['error_dict']}")
                 raise SpecVersionException(
                     expected_version=response["error_dict"]["expected_version"],
                     actual_version=response["error_dict"]["actual_version"],
                 )
+
+            if error_name == MinerFrozenError.__name__:
+                logger.warning(f"Miner is frozen: {response['error_dict']}")
+                raise MinerFrozenException(response["error_dict"]["message"])
+
+            if error_name == MinerInitializingError.__name__:
+                logger.warning(f"Miner is initializing: {response['error_dict']}")
+                raise MinerInitializingException(response["error_dict"]["message"])
+
             else:
                 raise Exception(f"Unexpected error from orchestrator. Response: {response}")
+
         else:
             return response
 
@@ -351,6 +480,8 @@ class MinerAPIClient(CommonAPIClient):
                 path="/miner/get_previous_partitions",
                 hotkey=self.hotkey,
                 body=partition_indices,
+                is_mounted=self.is_mounted,
+                electron_version=self.electron_version,
             )
             response = self.parse_response(response)
             if response is None:

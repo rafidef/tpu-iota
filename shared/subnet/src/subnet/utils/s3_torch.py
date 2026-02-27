@@ -8,7 +8,7 @@ from asyncio.exceptions import TimeoutError
 import aiohttp
 from common.utils.exceptions import NanInfWarning
 from common.models.miner_models import ChunkMetadata
-from common.models.run_flags import RUN_FLAGS
+from common.models.run_flags import RUN_FLAGS, RunFlags
 from subnet.model.utils import log_gpu_memory_usage
 from subnet.utils.vector_utils import check_for_nans_and_infs
 
@@ -16,32 +16,52 @@ import torch
 import numpy as np
 
 
+def _should_skip_ssl(url: str) -> bool:
+    """Return True if SSL verification should be skipped for localhost/minio URLs."""
+    return "localhost" in url or "minio" in url or "127.0.0.1" in url
+
+
 class AioHttpClientWithOpenSession:
     def __init__(self):
         self.SESSION_REFRESH_TIME = 300
         self.session = None
         self.session_created_at = time()
+        self._current_ssl_skip = None  # Track if current session has SSL skip enabled
 
     async def close(self):
         if self.session:
             await self.session.close()
+            self.session = None
+            self._current_ssl_skip = None
 
-    async def refresh_session_if_needed(self):
-        if not self.session or time() - self.session_created_at > self.SESSION_REFRESH_TIME:
+    async def _get_or_create_session(self, skip_ssl: bool):
+        """Get existing session or create new one with appropriate SSL settings."""
+        needs_refresh = (
+            not self.session
+            or time() - self.session_created_at > self.SESSION_REFRESH_TIME
+            or self._current_ssl_skip != skip_ssl
+        )
+        if needs_refresh:
             await self.close()
-            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300))
+            connector = aiohttp.TCPConnector(ssl=False) if skip_ssl else None
+            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300), connector=connector)
             self.session_created_at = time()
+            self._current_ssl_skip = skip_ssl
+        return self.session
 
     async def get(self, url: str):
-        await self.refresh_session_if_needed()
-        response = await self.session.get(url)
+        skip_ssl = _should_skip_ssl(url)
+        session = await self._get_or_create_session(skip_ssl)
+        response = await session.get(url)
         return response
 
 
-async def process_response(response: aiohttp.ClientResponse, dtype: torch.dtype, device: str = "cuda") -> torch.Tensor:
+async def process_response(
+    response: aiohttp.ClientResponse, dtype: torch.dtype, device: str = "cuda", run_flags: RunFlags = RUN_FLAGS
+) -> torch.Tensor:
     """Process the response from aiohttp and return a tensor."""
     content = await response.read()
-    if RUN_FLAGS.compress_s3_files.isOn():
+    if run_flags.compress_s3_files.isOn():
         content = gzip.decompress(content)
     loaded_tensor = np.frombuffer(content, dtype=np.uint8)
     loaded_tensor = torch.tensor(loaded_tensor).view(dtype).to(device)
@@ -53,6 +73,7 @@ async def download_tensor(
     dtype: torch.dtype = torch.bfloat16,
     device: str = "cuda",
     max_retries: int = 3,
+    run_flags: RunFlags = RUN_FLAGS,
 ) -> torch.Tensor:
     """Download bytes and cast into a tensor from S3 storage with retry logic.
 
@@ -74,7 +95,7 @@ async def download_tensor(
             # Create new session for single download
             response = await s3_client.get(path)
             response.raise_for_status()
-            loaded_tensor = await process_response(response=response, dtype=dtype, device=device)
+            loaded_tensor = await process_response(response=response, dtype=dtype, device=device, run_flags=run_flags)
 
             assert isinstance(
                 loaded_tensor, torch.Tensor
@@ -128,10 +149,12 @@ async def download_weights_or_optimizer_state(
     """Download weights from S3 storage with retry logic."""
     start_time = time()
     timeout = aiohttp.ClientTimeout(total=3000)  # 5 minute timeout
+    # Skip SSL verification for localhost/minio (self-signed certs in local dev)
+    connector = aiohttp.TCPConnector(ssl=False) if _should_skip_ssl(metadata_info.tensor_path) else None
 
     for attempt in range(max_retries + 1):
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 # if partition is not specified, download the full tensor
                 byte_range = f"bytes={metadata_info.start_byte}-{metadata_info.end_byte - 1}"
                 async with session.get(metadata_info.tensor_path, headers={"Range": byte_range}) as response:

@@ -16,6 +16,7 @@ from time import monotonic
 from typing import Deque, Iterable
 
 import torch
+from pydantic import BaseModel, Field
 
 
 @dataclass(slots=True)
@@ -34,6 +35,30 @@ class LossSample:
     value: float
 
 
+class ActivationTimingStage(BaseModel):
+    start: float | None = None
+    end: float | None = None
+    duration: float | None = None
+    cache_len: int | None = None
+    forward_queue_len: int | None = None
+    backward_queue_len: int | None = None
+
+
+class ActivationTiming(BaseModel):
+    queue: ActivationTimingStage = Field(default_factory=ActivationTimingStage)
+    download: ActivationTimingStage = Field(default_factory=ActivationTimingStage)
+    forward: ActivationTimingStage = Field(default_factory=ActivationTimingStage)
+    backward: ActivationTimingStage = Field(default_factory=ActivationTimingStage)
+    upload: ActivationTimingStage = Field(default_factory=ActivationTimingStage)
+    publish: ActivationTimingStage = Field(default_factory=ActivationTimingStage)
+
+
+class ActivationStats(BaseModel):
+    time_received: float | None = None
+    direction: str | None = None
+    timing: ActivationTiming = Field(default_factory=ActivationTiming)
+
+
 @dataclass(slots=True)
 class StatsTracker:
     """Accumulates miner runtime statistics for dashboard consumption."""
@@ -45,6 +70,7 @@ class StatsTracker:
     remote_epoch: int | None = None
     local_epoch: int | None = None
     run_id: str | None = None
+    activation_stats: dict[str, ActivationStats] = field(default_factory=dict)
     _forward_count: int = 0
     _backward_count: int = 0
     _download_bytes: int = 0
@@ -129,6 +155,7 @@ class StatsTracker:
         # Clear history collections (preserving maxlen for _loss_history)
         self._activations.clear()
         self._loss_history.clear()
+        self.activation_stats.clear()
 
     # --- Aggregated views --------------------------------------------------
 
@@ -201,6 +228,30 @@ class StatsTracker:
             timestamp = monotonic()
         self._activations.append(ActivationSample(timestamp=timestamp, direction=direction))
         self._prune_activations(timestamp, self.activation_history_window)
+
+    def ensure_activation_stats(
+        self,
+        activation_id: str,
+        *,
+        direction: str | None = None,
+        time_received: float | None = None,
+    ) -> ActivationStats:
+        stats = self.activation_stats.get(activation_id)
+        if stats is None:
+            stats = ActivationStats(time_received=time_received, direction=direction)
+            self.activation_stats[activation_id] = stats
+        else:
+            if direction is not None:
+                stats.direction = direction
+            if time_received is not None:
+                stats.time_received = time_received
+        return stats
+
+    def get_activation_stats_payload(self, activation_id: str) -> dict | None:
+        stats = self.activation_stats.get(activation_id)
+        if stats is None:
+            return None
+        return stats.model_dump()
 
     def _prune_activations(self, current_time: float, window_seconds: float) -> None:
         """Drop activation samples older than the requested window."""

@@ -21,7 +21,9 @@ from subnet.model.model_mixin import ModelManager
 from common.utils.exceptions import LayerStateException, MinerNotRegisteredException
 from miner import settings as miner_settings
 
-from miner.pool.stats import StatsTracker, tensor_num_bytes
+from miner.utils.stats import StatsTracker, tensor_num_bytes
+from miner.telemetry.metric_registry import S3_DOWNLOAD_SPEED_BYTES_PER_SEC
+from common.models.run_flags import RunFlags
 
 
 class DownloadedData(BaseModel):
@@ -41,12 +43,19 @@ class ActivationQueue:
     """
 
     def __init__(
-        self, miner_api_client: MinerAPIClient, state_manager: StateManager, activation_cache: ActivationCache
+        self,
+        miner_api_client: MinerAPIClient,
+        state_manager: StateManager,
+        activation_cache: ActivationCache,
+        mock: bool,
+        run_flags: RunFlags,
     ):
         self._miner_api_client: MinerAPIClient = miner_api_client
         self._state_manager: StateManager = state_manager
         self._cache: ActivationCache = activation_cache
         self._stats_tracker: StatsTracker | None = None
+        self._mock = mock
+        self._run_flags = run_flags
 
         self._queue_lock: asyncio.Lock = asyncio.Lock()
         self._forward_queue: deque[ActivationData] = deque()
@@ -220,6 +229,19 @@ class ActivationQueue:
             # Filter the response
             response = await self._filter_duplicates(response=response)  # do this before we split
             backward_response, forward_response = await self._split_responses(response=response)
+            if self._stats_tracker is not None:
+                for forward in forward_response:
+                    self._stats_tracker.ensure_activation_stats(
+                        forward.activation_id,
+                        direction="forward",
+                        time_received=time.time(),
+                    )
+                for backward in backward_response:
+                    self._stats_tracker.ensure_activation_stats(
+                        backward.activation_id,
+                        direction="backward",
+                        time_received=time.time(),
+                    )
             logger.debug(
                 f"Forward response prior to excess filtering: {[(a.activation_id, a.direction) for a in forward_response]}"
             )
@@ -282,6 +304,12 @@ class ActivationQueue:
                     f"Downloaded activation {activation_response.activation_id} going {activation_response.direction}"
                 )
                 async with self._queue_lock:
+                    if self._stats_tracker is not None:
+                        stats = self._stats_tracker.ensure_activation_stats(
+                            activation_response.activation_id,
+                            direction=activation_response.direction,
+                        )
+                        stats.timing.queue.start = time.time()
                     if activation_response.direction == "backward":
                         self._backward_queue.append(entry)
                     else:
@@ -298,6 +326,7 @@ class ActivationQueue:
                 hotkey=self._miner_api_client.hotkey.ss58_address[:8],
             ):
                 try:
+                    start_time = time.time()
                     # Download the input activations
                     if activation_response.direction == "forward" and self._state_manager.layer == 0:
                         input_activations = await asyncio.wait_for(
@@ -305,6 +334,8 @@ class ActivationQueue:
                                 download_url=activation_response.presigned_download_url,
                                 tokenizer=self._model_manager.tokenizer,
                                 device="cpu",
+                                mock=self._mock,
+                                run_flags=self._run_flags,
                             ),
                             timeout=common_settings.S3_DOWNLOAD_TIMEOUT,
                         )
@@ -313,10 +344,11 @@ class ActivationQueue:
                             download_tensor(
                                 path=activation_response.presigned_download_url,
                                 device="cpu",
+                                run_flags=self._run_flags,
                             ),
                             timeout=common_settings.S3_DOWNLOAD_TIMEOUT,
                         )
-                        if not common_settings.MOCK:
+                        if not self._mock:
                             input_activations = input_activations.reshape(
                                 common_settings.MINI_BATCH_SIZE,
                                 common_settings.SEQUENCE_LENGTH,
@@ -341,12 +373,28 @@ class ActivationQueue:
                                 download_url=activation_response.target_download_url,
                                 tokenizer=self._model_manager.tokenizer,
                                 device="cpu",
+                                mock=self._mock,
+                                run_flags=self._run_flags,
                             ),
                             timeout=common_settings.S3_DOWNLOAD_TIMEOUT,
                         )
                     total_bytes = tensor_num_bytes(input_activations) + tensor_num_bytes(sample_activations)
                     if self._stats_tracker is not None:
                         self._stats_tracker.record_download(total_bytes)
+                    end_time = time.time()
+                    if self._stats_tracker is not None:
+                        stats = self._stats_tracker.ensure_activation_stats(
+                            activation_response.activation_id,
+                            direction=activation_response.direction,
+                        )
+                        stats.timing.download.start = start_time
+                        stats.timing.download.end = end_time
+                        stats.timing.download.duration = end_time - start_time
+                    download_duration = end_time - start_time
+                    if download_duration > 0 and total_bytes > 0:
+                        S3_DOWNLOAD_SPEED_BYTES_PER_SEC.labels(layer_idx=str(self._state_manager.layer)).set(
+                            total_bytes / download_duration
+                        )
                     return DownloadedData(
                         activation_response=activation_response,
                         input_activations=input_activations,

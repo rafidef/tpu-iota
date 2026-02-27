@@ -2,7 +2,6 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from loguru import logger
 
 COMMON_DOTENV_PATH = os.getenv("COMMON_DOTENV_PATH", ".env")
 _dotenv_path = Path(COMMON_DOTENV_PATH)
@@ -11,16 +10,13 @@ if _dotenv_path.exists():
 
 # Generic settings
 MOCK = os.getenv("MOCK") == "True"
-if MOCK:
-    logger.warning("RUNNING IN MOCK MODE!")
-
 LOG_FILE_ENABLED = os.getenv("LOG_FILE_ENABLED") == "True"
-TEST_MODE = os.getenv("TEST_MODE") == "True"
 
 # Bittensor settings
 __SPEC_VERSION__ = 30016
 __VALIDATOR_SPEC_VERSION__ = 5065
 BITTENSOR = os.getenv("BITTENSOR", "True") == "True"
+SUBTENSOR_ENDPOINT = os.getenv("SUBTENSOR_ENDPOINT")
 MAX_NUM_PARTS = int(os.getenv("MAX_NUM_PARTS", 10000))
 NETUID = int(os.getenv("NETUID", "9"))
 NETWORK = os.getenv("NETWORK", "finney")
@@ -28,8 +24,8 @@ OWNER_UID = 209
 FALLBACK_BURN_FACTOR = 0.8
 
 # Orchestrator settings (common)
-if TEST_MODE:
-    # Local testing
+if NETWORK == "local":
+    # Local development
     ORCHESTRATOR_PORT = int(os.getenv("ORCHESTRATOR_PORT", 8000))
     ORCHESTRATOR_HOST = os.getenv("ORCHESTRATOR_HOST", "localhost")
     ORCHESTRATOR_SCHEMA = os.getenv("ORCHESTRATOR_SCHEME", "http")
@@ -79,8 +75,8 @@ NESTEROV_MOMENTUM = 0.9
 MAX_ACTIVATION_CACHE_SIZE = 8
 MAX_FORWARD_ACTIVATIONS_IN_QUEUE = 6
 MIN_FORWARD_ACTIVATIONS_IN_QUEUE = 2
-MINI_BATCH_SIZE = 8
-MINI_BATCH_ACCUMULATION_COUNT = 8
+MINI_BATCH_SIZE = 32
+MINI_BATCH_ACCUMULATION_COUNT = 4
 SEQUENCE_LENGTH = 800
 
 # Epoch level sync settings

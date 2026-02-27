@@ -1,10 +1,11 @@
 import math
-
-from subnet.utils.partition_utils import load_model_weights
 import torch
+from loguru import logger
+
+from common.models.run_flags import RunFlags
 from common import settings as common_settings
 from common.utils.exceptions import NanInfException
-from loguru import logger
+from subnet.utils.partition_utils import load_model_weights
 from subnet.model.loaders import load_model_split
 from subnet.model.tokenizer import load_tokenizer
 from subnet.model.utils import _clean_gpu_memory, log_gpu_memory_usage
@@ -13,6 +14,8 @@ from subnet.utils.vector_utils import add_artificial_gradients, check_for_nans_a
 
 
 class MockModel(torch.nn.Module):
+    """Mock model for local development testing."""
+
     def __init__(self):
         super().__init__()
         self.layer1 = torch.nn.Linear(100, 64).to(torch.bfloat16)
@@ -39,6 +42,81 @@ class MockModel(torch.nn.Module):
         return super().parameters()
 
 
+class TestModel(torch.nn.Module):
+    """Test model for local development testing.
+
+    Handles both layer 0 (receives token IDs) and other layers (receive float activations).
+    Uses a simple architecture that mimics the real model's input/output patterns.
+    Uses float32 for MPS compatibility (bfloat16 not supported on MPS).
+
+    Args:
+        layer_idx: The layer index (0 = first layer with embeddings)
+        n_splits: Total number of layer splits (to determine if this is the last layer)
+        hidden_dim: The output dimension (should match bottleneck_dim or emb_dim from config)
+        vocab_size: Vocabulary size for embeddings (layer 0) and output logits (last layer)
+    """
+
+    def __init__(self, layer_idx: int = 0, n_splits: int = 3, hidden_dim: int = 128, vocab_size: int = 128256):
+        super().__init__()
+        self.layer_idx = layer_idx
+        self.n_splits = n_splits
+        self.hidden_dim = hidden_dim
+        self.vocab_size = vocab_size
+        self.is_last_layer = layer_idx == n_splits - 1
+        # Use float32 for MPS compatibility
+        self.dtype = torch.float32
+
+        if layer_idx == 0:
+            # Layer 0: receives token IDs, needs embedding
+            # Named tok_emb to match real Llama model interface (used by training.py)
+            self.tok_emb = torch.nn.Embedding(vocab_size, hidden_dim)
+            self.layer1 = torch.nn.Linear(hidden_dim, hidden_dim)
+        else:
+            # Other layers: receive float activations
+            self.layer1 = torch.nn.Linear(hidden_dim, hidden_dim)
+
+        self.layer2 = torch.nn.Linear(hidden_dim, hidden_dim)
+        self.activation = torch.nn.ReLU()
+
+        # Last layer needs to output logits over vocabulary
+        if self.is_last_layer:
+            self.lm_head = torch.nn.Linear(hidden_dim, vocab_size)
+
+    def forward(self, x):
+        if self.layer_idx == 0:
+            # Layer 0: embed token IDs first
+            x = self.tok_emb(x).to(self.dtype)
+        else:
+            # Ensure input is float32
+            x = x.to(self.dtype)
+
+        x = self.activation(self.layer1(x))
+        x = self.layer2(x)
+
+        # Last layer outputs logits over vocabulary
+        if self.is_last_layer:
+            x = self.lm_head(x)
+
+        # Convert output to bfloat16 on CPU (MPS doesn't support bfloat16)
+        # This ensures compatibility with the rest of the system
+        x = x.cpu().to(torch.bfloat16)
+        return x, {}
+
+    def backward(
+        self,
+        output_activations: torch.Tensor,
+        activation_grads: torch.Tensor,
+        state: dict,
+    ):
+        # Ensure activation_grads is on the same device as output_activations (CPU for MockModel)
+        activation_grads = activation_grads.to(output_activations.device)
+        # Pass in activation_grads to backward() to avoid implicit scalar gradient error
+        output_activations.backward(activation_grads)
+
+    def parameters(self):
+        return super().parameters()
+
+
 class ModelManager:
     def __init__(self):
         self.model_config: dict | None = None
@@ -50,6 +128,7 @@ class ModelManager:
         self.layer: int | None = None
         self.device: str | None = None
         self.logger_attributes: dict | None = None
+        self.run_flags: RunFlags | None = None
         self.optimizer_step_count: int = 0
         self.epoch_on_registration: int = 0
         self.epoch_counter: int = 0
@@ -254,9 +333,19 @@ class ModelManager:
         """
         Loads the model for the layer specified.
         """
-        if common_settings.MOCK:
-            logger.info("Mock mode enabled - loading mock model")
-            self.model = MockModel()
+        if common_settings.NETWORK == "local":
+            # Use bottleneck_dim from config (or emb_dim if not set) to match activation dimensions
+            if common_settings.MOCK:
+                logger.info("Local network - loading mock model")
+                self.model = MockModel()
+            else:
+                hidden_dim = self.model_config.get("bottleneck_dim") or self.model_config.get("emb_dim", 128)
+                vocab_size = self.model_config.get("vocab_size", 128256)
+                n_splits = self.model_metadata.get("n_splits", 3)
+                logger.info(
+                    f"Local network - loading test model for layer {layer}/{n_splits} with hidden_dim={hidden_dim}"
+                )
+                self.model = TestModel(layer_idx=layer, n_splits=n_splits, hidden_dim=hidden_dim, vocab_size=vocab_size)
             self.model.train()
             return
 
@@ -333,10 +422,13 @@ class ModelManager:
         )
 
     async def _load_vocab_info(self):
-        if common_settings.MOCK:
-            logger.info("Mock mode enabled - using mock vocab info")
-            self.vocab_size = 100
-            self.eos_token_id = 1
+        if common_settings.NETWORK == "local":
+            # Use actual vocab size from config to match MockModel's lm_head output
+            self.vocab_size = self.model_config.get("vocab_size", 128256)
+            self.eos_token_id = 128001  # Llama's EOS token ID
+            logger.info(
+                f"Local network - using vocab info: vocab_size={self.vocab_size}, eos_token_id={self.eos_token_id}"
+            )
             return
 
         self.vocab_size = len(self.tokenizer)
@@ -372,20 +464,21 @@ class ModelManager:
 
             log_gpu_memory_usage(note="after stepping optimizer")
 
-            # TODO: Remove this once we have a better way to handle local optimization step.
-            # If a miner registers at a later epoch that epoch = 1, their local optimizer can be completely bogus.
-            # This is a "warm up" period, where a miner can continue to do work, but we just *dont* up date their local weights.
-            if self.epoch_counter <= 2 and self.epoch_on_registration > 1:
-                # load our previous weights into memory
-                logger.info(
-                    f"Keeping previous weights for miner {self.logger_attributes['hotkey'][:8]} with epoch counter {self.epoch_counter} and epoch on registration {self.epoch_on_registration}"
-                )
-                loaded_weights = load_model_weights(
-                    hotkey=self.logger_attributes["hotkey"],
-                    run_id=self.logger_attributes["run_id"],
-                    layer_idx=self.layer,
-                )
-                torch.nn.utils.vector_to_parameters(loaded_weights, self.model.parameters())
+            if self.run_flags is not None and self.run_flags.upload_optimizer_state.isOff():
+                # TODO: Remove this once we have a better way to handle local optimization step.
+                # If a miner registers at a later epoch that epoch = 1, their local optimizer can be completely bogus.
+                # This is a "warm up" period, where a miner can continue to do work, but we just *dont* up date their local weights.
+                if self.epoch_counter <= 2 and self.epoch_on_registration > 1:
+                    # load our previous weights into memory
+                    logger.info(
+                        f"Keeping previous weights for miner {self.logger_attributes['hotkey'][:8]} with epoch counter {self.epoch_counter} and epoch on registration {self.epoch_on_registration}"
+                    )
+                    loaded_weights = load_model_weights(
+                        hotkey=self.logger_attributes["hotkey"],
+                        run_id=self.logger_attributes["run_id"],
+                        layer_idx=self.layer,
+                    )
+                    torch.nn.utils.vector_to_parameters(loaded_weights, self.model.parameters())
 
             logger.info(f"{self.logger_attributes['hotkey'][:8]} completed local optimization step")
             log_gpu_memory_usage(note="after local optimization step")

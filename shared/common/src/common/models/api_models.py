@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Final, Literal, Optional
 from fastapi import HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from common import settings
 from common.models.ml_models import ModelConfig, ModelMetadata
@@ -57,12 +57,30 @@ class SyncActivationAssignmentsRequest(BaseModel):
 class WeightUpdate(BaseModel):
     weights_path: str
     weights_metadata_path: str
-    attestation: "MinerAttestationPayload | None" = None
+    attestation: "MinerAttestationPayload | EnclaveSignResponse | None" = None
+
+
+class WeightSubmitResponse(BaseModel):
+    message: str
+    should_upload_optimizer_state: bool = False
+
+
+class OptimizerStateUpdate(BaseModel):
+    """Request to update optimizer state path after weight submission."""
+
+    optimizer_state_path: str
+
+
+class LayerOptimizerStateResponse(BaseModel):
+    """Response containing the presigned URL for layer-based optimizer state download."""
+
+    optimizer_state_url: str | None = None
+    available: bool = False
 
 
 class SubmitMergedPartitionsRequest(BaseModel):
     partitions: list[MinerPartition]
-    attestation: "MinerAttestationPayload | None" = None
+    attestation: "MinerAttestationPayload | EnclaveSignResponse | None" = None
 
 
 class MinerRegistrationResponse(BaseModel):
@@ -172,8 +190,8 @@ class MinerScore(BaseModel):
     # Calculated by: total_score / all total_scores for the run
     run_weight: float | None = None
 
-    # Overall weight for this hotkey (these total to 1.0 across all miners)
-    # Calculated by: weight_in_run * (1 - run's burn rate) * run's incentive_perc
+    # Overall weight for this hotkey (these total to 1.0 across all miners incl. burn)
+    # Calculated by: run_weight * (1 - run's burn rate) * run's incentive_perc
     weight: float | None = None
 
 
@@ -183,11 +201,8 @@ class RunIncentiveAllocation(BaseModel):
     run_id: str
 
     # Weight of the run that determines percentage of incentive allocated for this run
+    # These must sum to less than or equal to 1.0
     incentive_weight: float
-
-    # Percentage of incentive allocated for this run
-    # Calculated by: incentive_weight / total_incentive_weight
-    incentive_normalized: float | None = None
 
     # How much of the allocated incentive is burned for this run
     burn_factor: float
@@ -241,14 +256,16 @@ class SubmitActivationRequest(BaseModel):
     direction: Literal["forward", "backward"]
     activation_id: str | None = None
     activation_path: str | None = None
-    attestation: MinerAttestationPayload | None = None
+    activation_stats: dict[str, Any] | None = None
+    attestation: MinerAttestationPayload | EnclaveSignResponse | None = None
 
 
 class RegisterMinerRequest(BaseModel):
     run_id: str
-    attestation: MinerAttestationPayload | None = None
+    attestation: MinerAttestationPayload | EnclaveSignResponse | None = None
     coldkey: str | None = None
     register_as_metagraph_miner: bool = True
+    enclave_payload: EnclaveGetKeyIdResponse | None = None
 
 
 class PayoutColdkeyRequest(BaseModel):
@@ -266,3 +283,106 @@ class RunInfo(BaseModel):
     authorized: bool
     run_flags: RunFlags
     max_miners: int
+
+
+############################################################
+#
+# NODE PROTOCOL CONTROL MODELS
+#
+############################################################
+
+ServerCapability = Literal[
+    "control.start",
+    "control.stop",
+    "control.configure",
+    "training.state",
+    "register.status",
+    "register.best_run",
+    "enclave.get_key_id",
+    "enclave.sign",
+    "enclave.doctor",
+    "enclave.reset",
+]
+
+NODE_PROTOCOL_CONTROL_SERVER_CAPABILITIES: Final[tuple[ServerCapability, ...]] = (
+    # Currently not hooked up control messages
+    "control.start",
+    "control.stop",
+    "control.configure",
+    "training.state",
+    # Registration messages
+    "register.status",
+    "register.best_run",
+    # Secure enclave messages
+    "enclave.get_key_id",
+    "enclave.sign",
+    "enclave.doctor",
+    "enclave.reset",
+)
+
+# --- Register payloads ---
+
+RegisterStatus = Literal["initializing", "initialized", "frozen", "registered"]
+
+
+class RegisterSetStatusRequest(BaseModel):
+    status: RegisterStatus
+
+
+class RegisterSetStatusResponse(BaseModel):
+    status: int
+
+
+class RegisterSetBestRunRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    run_id: str = Field(alias="runId", serialization_alias="runId")
+
+
+class RegisterSetBestRunResponse(BaseModel):
+    status: int
+
+
+class TrainingStateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    state: str
+    detail: str | None = None
+    run_id: str | None = Field(default=None, alias="runId", serialization_alias="runId")
+    layer: int | None = None
+
+
+class TrainingStateResponse(BaseModel):
+    status: int
+
+
+# --- KeySigner-aligned enclave payloads ---
+
+KeySignerAlg = Literal["ES256"]
+
+
+class EnclaveGetKeyIdRequest(BaseModel):
+    purpose: str
+    preferredAlgorithms: list[str] = Field(default_factory=list)
+    dpKeychain: Optional[bool] = None
+
+
+class EnclaveGetKeyIdResponse(BaseModel):
+    key_id: str
+    public_key_base64: str
+    alg: KeySignerAlg
+
+
+class EnclaveSignRequest(BaseModel):
+    keyId: str
+    payloadBase64: str
+    alg: KeySignerAlg = "ES256"
+    dpKeychain: Optional[bool] = None
+
+
+class EnclaveSignResponse(BaseModel):
+    key_id: str
+    signature_der_base64: str
+    alg: KeySignerAlg
+    challenge_id: Optional[str] = None
+    public_key_base64: Optional[str] = None

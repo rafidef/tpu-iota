@@ -2,11 +2,18 @@ import torch
 from loguru import logger
 
 from common import settings as common_settings
+from common.models.run_flags import RUN_FLAGS, RunFlags
 from common.utils.s3_utils import download_file
 from subnet.model.utils import log_gpu_memory_usage
 
 
-async def download_sample(download_url: str, tokenizer, device: str = "cpu") -> torch.Tensor:
+async def download_sample(
+    download_url: str,
+    tokenizer,
+    device: str = "cpu",
+    mock: bool = False,
+    run_flags: RunFlags = RUN_FLAGS,
+) -> torch.Tensor:
     """
     Downloads the sample from the given URL and returns it as a tensor.
 
@@ -15,7 +22,7 @@ async def download_sample(download_url: str, tokenizer, device: str = "cpu") -> 
         tokenizer: The tokenizer to use to decode the sample.
     """
     log_gpu_memory_usage(note="before downloading sample")
-    data = await download_file(presigned_url=download_url)
+    data = await download_file(presigned_url=download_url, run_flags=run_flags)
 
     # Some objects may be gzip-compressed without content-encoding header in R2; try transparently
     try:
@@ -28,7 +35,7 @@ async def download_sample(download_url: str, tokenizer, device: str = "cpu") -> 
         except Exception as e:
             raise Exception(f"Failed to decode sample as utf-8 (and gzip fallback failed): {e}")
 
-    if common_settings.MOCK:
+    if mock:
         return torch.randn(size=(common_settings.MINI_BATCH_SIZE, 100), dtype=torch.bfloat16).to("cpu")
 
     sample = torch.tensor(tokenizer.encode(text)).to(device)

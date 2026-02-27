@@ -10,7 +10,8 @@ def add_artificial_gradients(model: torch.nn.Module, device: Union[str, torch.de
     model.to(device)
     for param in model.parameters():
         if param.requires_grad:
-            param.grad = torch.zeros_like(param.data).to(dtype=torch.bfloat16).to(device)
+            # Use the same dtype as the parameter (float32 for MockModel/MPS, bfloat16 for real models)
+            param.grad = torch.zeros_like(param.data).to(device)
 
 
 def get_optimizer_tensor_shapes(optimizer: torch.optim.Optimizer):

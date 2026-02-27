@@ -5,8 +5,13 @@ from typing import Any
 
 import aiohttp
 from loguru import logger
-from common.models.run_flags import RUN_FLAGS
+from common.models.run_flags import RUN_FLAGS, RunFlags
 from common import settings as common_settings
+
+
+def _should_skip_ssl(url: str) -> bool:
+    """Return True if SSL verification should be skipped for localhost/minio URLs."""
+    return "localhost" in url or "minio" in url or "127.0.0.1" in url
 
 
 async def upload_parts(urls: list[str], data: bytes, upload_id: str | None, max_retries: int = 3) -> list[dict]:
@@ -34,7 +39,9 @@ async def upload_parts(urls: list[str], data: bytes, upload_id: str | None, max_
 
     # Configure timeout for S3 uploads - allow for larger files with reasonable timeout
     timeout = aiohttp.ClientTimeout(total=common_settings.S3_UPLOAD_TIMEOUT, connect=30)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    # Skip SSL verification for localhost/minio (self-signed certs in local dev)
+    connector = aiohttp.TCPConnector(ssl=False) if urls and _should_skip_ssl(urls[0]) else None
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         parts = []
 
         part_size = int(math.ceil(len(data) / len(urls)))
@@ -125,7 +132,9 @@ async def upload_part(urls: list[str], data: bytes, upload_id: str, max_retries:
 
     # Configure timeout for S3 uploads
     timeout = aiohttp.ClientTimeout(total=common_settings.S3_UPLOAD_TIMEOUT, connect=30)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    # Skip SSL verification for localhost/minio (self-signed certs in local dev)
+    connector = aiohttp.TCPConnector(ssl=False) if _should_skip_ssl(url) else None
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         # Retry logic for the upload
         for attempt in range(max_retries + 1):  # +1 to include initial attempt
             try:
@@ -166,7 +175,7 @@ async def upload_part(urls: list[str], data: bytes, upload_id: str, max_retries:
                     # Calculate exponential backoff delay (1s, 2s, 4s, ...)
                     delay = 2**attempt
                     logger.warning(
-                        f"Upload failed (attempt {attempt + 1}/{max_retries + 1}): {e}. " f"Retrying in {delay}s..."
+                        f"Upload failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay}s..."
                     )
                     await asyncio.sleep(delay)
                 else:
@@ -174,16 +183,18 @@ async def upload_part(urls: list[str], data: bytes, upload_id: str, max_retries:
                     raise
 
 
-async def download_file(presigned_url: str, max_retries: int = 3):
+async def download_file(presigned_url: str, max_retries: int = 3, run_flags: RunFlags = RUN_FLAGS):
     """Download a file from S3 storage with retry logic."""
     timeout = aiohttp.ClientTimeout(total=common_settings.S3_DOWNLOAD_TIMEOUT)
+    # Skip SSL verification for localhost/minio (self-signed certs in local dev)
+    connector = aiohttp.TCPConnector(ssl=False) if _should_skip_ssl(presigned_url) else None
 
     for attempt in range(max_retries + 1):
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 async with session.get(presigned_url) as response:
                     response.raise_for_status()
-                    if RUN_FLAGS.compress_s3_files.isOn():
+                    if run_flags.compress_s3_files.isOn():
                         return gzip.decompress(await response.read())
                     else:
                         return await response.read()

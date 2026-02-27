@@ -1,6 +1,7 @@
 import json
 import time
 from miner import settings as miner_settings
+from common import settings as common_settings
 from typing import Any, Dict, Optional
 from common.utils.timer_logger import TimerLogger, TIMER_NAMES
 from loguru import logger
@@ -125,7 +126,7 @@ class TimerLoggerMiner(TimerLogger):
 
     async def _send_event_to_api(self, event: Dict[str, Any]):
         """Send an event to the visualization API server."""
-        if not self.hotkey:
+        if not self.hotkey or common_settings.NETWORK == "local":
             return
 
         try:
@@ -133,11 +134,11 @@ class TimerLoggerMiner(TimerLogger):
             await client.post(f"{miner_settings.VISUALIZATION_API_URL}/api/events/{self.hotkey}", json=event)
         except Exception as e:
             # Silently fail - don't block the main process
-            logger.exception(f"Failed to send event to visualization API: {e}")
+            logger.debug(f"Failed to send event to visualization API: {e}")
 
     async def _send_count_log_to_api(self, count_log: Dict[str, Any]):
         """Send a count log to the visualization API server."""
-        if not self.hotkey:
+        if not self.hotkey or common_settings.NETWORK == "local":
             return
 
         try:

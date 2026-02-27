@@ -20,13 +20,19 @@ class CommonAPIClient:
 
     @classmethod
     async def orchestrator_request(
-        cls, method: str, path: str, body: dict | None = None, hotkey: Keypair | None = None
+        cls,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        hotkey: Keypair | None = None,
+        is_mounted: bool = False,
+        electron_version: str | None = None,
     ) -> dict:
         logger.opt(colors=True).debug(
             f"\n<magenta>Making orchestrator request | method: {method} | path: {path}</magenta>"
         )
 
-        headers = None
+        headers = {}
         response = None
         request_id = None  # Will be extracted from response
         body_bytes = create_message_body(data={} if not body else body)
@@ -35,7 +41,11 @@ class CommonAPIClient:
         if hotkey:
             headers = generate_header(hotkey, body_bytes)
             # Don't add request ID to headers - let orchestrator generate it
-        logger.warning(f"ALL HEADERS: {headers}")
+
+        headers["X-Is-Mounted"] = "true" if is_mounted else "false"
+        if electron_version is not None:
+            headers["X-Host-Version"] = electron_version
+
         for i in range(common_settings.REQUEST_RETRY_COUNT):
             try:
                 if i:

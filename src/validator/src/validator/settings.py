@@ -1,6 +1,6 @@
 import os
 
-from common.settings import BITTENSOR, MOCK
+from common.settings import BITTENSOR
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -44,8 +44,8 @@ def detect_device() -> str:
 DEVICE = os.getenv("DEVICE") or detect_device()
 
 # WEIGHT_SUBMIT_INTERVAL: int = 3600  # submit weight every 1 hour
-WEIGHT_SUBMIT_INTERVAL: int = 10 if (MOCK or not BITTENSOR) else 60 * 21  # submit weight every 21 minutes
-FETCH_TASKS_INTERVAL: int = 5 if (MOCK or not BITTENSOR) else 60  # fetch tasks every 5 minutes
+WEIGHT_SUBMIT_INTERVAL: int = 60 * 21 if BITTENSOR else 10  # submit weight every 21 minutes
+FETCH_TASKS_INTERVAL: int = 60 if BITTENSOR else 5  # fetch tasks every minute
 ORCHESTRATOR_HEALTH_CHECK_INTERVAL: int = 60  # check orchestrator health every 1 minute
 
 # Validation Thresholds

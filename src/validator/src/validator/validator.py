@@ -1,22 +1,20 @@
-import asyncio
 import os
 import time
+import asyncio
 from typing import Optional
 from aiohttp import web
 from bittensor_wallet import Wallet
-from common.models.api_models import ValidatorTask
 from loguru import logger
+import bittensor as bt
 
 from common import settings as common_settings
+from common.models.api_models import ValidatorTask
 from subnet.base.base_neuron import BaseNeuron
-from subnet.test_client import TestAPIClient
 from subnet.utils.bt_utils import get_subtensor
 from subnet.validator_api_client import ValidatorAPIClient
 from validator import settings as validator_settings
 from validator.utils.task_execution import execute_task
 from validator.utils.weight_setting import set_weights, copy_weights_from_chain, weight_setting_step
-
-PENALTY_RATE = 3
 
 
 class HealthServerMixin:
@@ -62,6 +60,9 @@ class Validator(BaseNeuron, HealthServerMixin):
 
         if common_settings.BITTENSOR:
             self.subtensor = get_subtensor()
+            self.metagraph = bt.metagraph(
+                netuid=int(common_settings.NETUID), lite=False, network=common_settings.NETWORK
+            )
 
     async def weight_loop(self):
         """
@@ -73,16 +74,21 @@ class Validator(BaseNeuron, HealthServerMixin):
         while True:
             try:
                 loop_count += 1
+                self.metagraph.sync(subtensor=self.subtensor, lite=False)
+
                 try:
                     logger.debug(f"Weight loop iteration {loop_count} starting")
-                    await weight_setting_step(wallet=self.wallet, subtensor=self.subtensor)
+                    await weight_setting_step(wallet=self.wallet, subtensor=self.subtensor, metagraph=self.metagraph)
 
                 except TimeoutError as e:
                     logger.error(f"TimeoutError in weight loop iteration {loop_count}: {e}")
 
                 except Exception as e:
                     logger.exception(f"Error in weight loop iteration {loop_count}: {e}")
-                    await set_weights(wallet=self.wallet, subtensor=self.subtensor, weights=copy_weights_from_chain())
+                    weights = copy_weights_from_chain(metagraph=self.metagraph)
+                    await set_weights(
+                        wallet=self.wallet, subtensor=self.subtensor, weights=weights, metagraph=self.metagraph
+                    )
 
                 logger.info(
                     f"💤 Weight submission loop sleeping for {validator_settings.WEIGHT_SUBMIT_INTERVAL} seconds 💤"
@@ -139,11 +145,6 @@ class Validator(BaseNeuron, HealthServerMixin):
         """
 
         logger.info("🚀 Starting validator with robust task management")
-
-        # Initial setup - this only happens once
-        if common_settings.TEST_MODE:
-            logger.info(f"🔄 Registering validator {self.hotkey[:8]} to metagraph")
-            await TestAPIClient.register_to_metagraph(hotkey=self.wallet.hotkey, role="validator")
 
         # Start the healthcheck server
         if validator_settings.LAUNCH_HEALTH:
